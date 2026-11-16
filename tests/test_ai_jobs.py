@@ -1,11 +1,19 @@
 """Reachout AI job match: the ranking engine, the LangChain pipeline, keys, consent and auto-apply rules."""
 
+import re
 import time
+from urllib.parse import urlsplit
 
 import pytest
-from conftest import A, H
+from conftest import A, H, patch_shared
 
 from features import ai_jobs as AI
+
+
+@pytest.fixture(autouse=True)
+def _postings_are_open(monkeypatch):
+    """The liveness gate reads the job page over the network; tests treat every posting as open."""
+    patch_shared(monkeypatch, "liveness", src=AI, value=lambda job: {"state": "active", "reason": "test"})
 
 
 RESUME = "Full stack developer, 3 years of experience. Python, React, Node.js, TypeScript, MongoDB, AWS, Docker."
@@ -53,14 +61,14 @@ def test_only_supported_application_sites_are_recognised(url, ok):
 
 
 def test_pipeline_with_career_sites(monkeypatch):
-    monkeypatch.setattr(AI, "board_jobs", lambda ats, board: JOBS if board == "acme" else [])
-    monkeypatch.setattr(AI, "BOARDS", [("lever", "acme")])
+    patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: JOBS if board == "acme" else [])
+    patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
     st = AI.build_chain({}, ["career_sites"]).invoke({"profile": PROFILE, "use_llm": False})
     assert st["ranked"][0]["title"] == "Full Stack Engineer" and st["engine"] == "Reachout AI" and st["considered"] == 4
 
 
 def test_web_search_results_are_read_from_their_job_board(monkeypatch):
-    monkeypatch.setattr(AI, "from_ats_url", lambda u: JOBS[0] if "lever" in u else None)
+    patch_shared(monkeypatch, "from_ats_url", src=AI, value=lambda u: JOBS[0] if "lever" in u else None)
     out = AI.web_hits_to_jobs([{"url": "https://jobs.lever.co/acme/x"}, {"url": "https://careers.other.example/job/1", "title": "Dev"}])
     assert out[0]["ats"] == "lever" and out[1]["ats"] == "" and out[1]["url"].startswith("https://careers.other")
 
@@ -83,10 +91,9 @@ def test_search_needs_a_resume_and_a_key_for_web_sources(user):
 
 
 def test_full_run_from_the_api(user, monkeypatch):
-    monkeypatch.setattr(AI, "board_jobs", lambda ats, board: JOBS)
-    monkeypatch.setattr(AI, "BOARDS", [("lever", "acme")])
-    monkeypatch.setattr(AI, "pdf_text", lambda ws, name: RESUME)
-    monkeypatch.setattr(AI, "ollama_ready", lambda: False)
+    patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: JOBS)
+    patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
+    patch_shared(monkeypatch, "pdf_text", src=AI, value=lambda ws, name: RESUME)
     user["ws"].save_doc("resume.pdf", b"%PDF-1.4 x")
     c = user["client"]
     assert c.post("/api/ai-jobs/match", json={"role": "Full Stack Developer", "years": 3, "resume": "resume.pdf"}, headers=H).status_code == 200
@@ -106,7 +113,7 @@ def test_auto_apply_needs_consent_and_records_the_application(user, monkeypatch)
     assert c.put("/api/ai-jobs/details", json={"linkedin": "https://linkedin.com/in/me", "consent": True}, headers=H).get_json()["consent"]
     assert c.put("/api/ai-jobs/details", json={"linkedin": "javascript:alert(1)"}, headers=H).status_code == 400
     ws.save("profile", {**ws.profile(), "phone": "+919999999999"})
-    monkeypatch.setattr(AI, "apply_one", lambda ws, job, submit=True, visible=False: {"state": "applied", "detail": "Application submitted.", "url": job["url"]})
+    patch_shared(monkeypatch, "apply_one", src=AI, value=lambda ws, job, submit=True, visible=False: {"state": "applied", "detail": "Application submitted.", "url": job["url"]})
     assert c.post("/api/ai-jobs/apply", json={"ids": [JOBS[0]["id"]]}, headers=H).status_code == 200
     for _ in range(100):
         if AI.APPLYING[ws.uid]["state"] != "running":
@@ -122,7 +129,7 @@ def test_greenhouse_jobs_apply_on_greenhouse_even_when_shown_on_the_company_site
     j = {"id": "gh:coinbase:7985187", "ats": "greenhouse", "url": "https://www.coinbase.com/careers/positions/7985187?gh_jid=7985187"}
     url = AI.apply_url(j)
     assert url == "https://job-boards.greenhouse.io/embed/job_app?for=coinbase&token=7985187"
-    assert AI.urlsplit(url).hostname in AI.APPLY_HOSTS
+    assert urlsplit(url).hostname in AI.APPLY_HOSTS
 
 
 @pytest.mark.parametrize("label,key", [("first name", "first"), ("email", "email"), ("phone", "phone"), ("location (city)", "location"),
@@ -130,7 +137,7 @@ def test_greenhouse_jobs_apply_on_greenhouse_even_when_shown_on_the_company_site
                                        ("have you previously been employed by coinbase in any capacity", None),
                                        ("are you a close relative of a government official", None)])
 def test_only_contact_fields_are_filled_never_questions(label, key):
-    hit = next((k for pat, k in AI.FIELD_MAP if AI.re.search(pat, label)), None)
+    hit = next((k for pat, k in AI.FIELD_MAP if re.search(pat, label)), None)
     assert hit == key
 
 
@@ -142,7 +149,7 @@ def test_live_view_and_hand_over_rules(user, monkeypatch):
     assert st["active"] and st["frame"].startswith("data:image/jpeg;base64,") and st["log"] == ["Attached your resume"]
     other = __import__("conftest").client_for(__import__("conftest").make_user()[0])
     assert other.get("/api/ai-jobs/live").get_json() == {"active": False}  # never another user's screen
-    monkeypatch.setattr(AI.C(), "PRODUCTION", True)
+    patch_shared(monkeypatch, "PRODUCTION", True)
     r = c.post(f"/api/ai-jobs/finish/{JOBS[0]['id']}", json={}, headers=H)
     assert r.status_code == 400 and "your own computer" in r.get_json()["error"]
     AI.LIVE.pop(ws.uid, None)
@@ -151,7 +158,7 @@ def test_live_view_and_hand_over_rules(user, monkeypatch):
 @pytest.mark.parametrize("label,key", [("link to your github profile", "github"), ("link to your linkedin profile", "linkedin"),
                                        ("your linkedin url", "linkedin"), ("github profile link", "github"), ("link to your portfolio", "portfolio")])
 def test_profile_link_questions_are_filled(label, key):
-    assert next((k for pat, k in AI.FIELD_MAP if AI.re.search(pat, label)), None) == key
+    assert next((k for pat, k in AI.FIELD_MAP if re.search(pat, label)), None) == key
 
 
 # ---------------------------------------------------------------- answer bank (supervised)
@@ -230,11 +237,11 @@ def test_unpacked_install_only_on_your_own_computer(user, monkeypatch, tmp_path)
     c = user["client"]
     monkeypatch.setattr(E, "install_dir", lambda: tmp_path / "Reachout Autofill")
     monkeypatch.setattr(__import__("subprocess"), "run", lambda *a, **k: None)
-    monkeypatch.setattr(AI, "can_hand_over", lambda: True)
+    patch_shared(monkeypatch, "can_hand_over", src=AI, value=lambda: True)
     if (A.WEB / "dist" / "downloads" / "reachout-autofill.zip").exists():
         r = c.post("/api/extension/install", json={}, headers=H)
         assert r.status_code == 200 and (tmp_path / "Reachout Autofill" / "manifest.json").exists()
-    monkeypatch.setattr(AI, "can_hand_over", lambda: False)
+    patch_shared(monkeypatch, "can_hand_over", src=AI, value=lambda: False)
     assert c.post("/api/extension/install", json={}, headers=H).status_code == 400
 
 

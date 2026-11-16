@@ -14,6 +14,18 @@ Reachout helps people run their outreach and job search from one place:
   - **My answers** (supervised learning): answers to application questions, typed by you or learned from forms you filled in. Learned and drafted answers wait for your approval; only approved ones are ever filled. Company-specific answers (e.g. "Why Notion?") only go to that company; `{company}` is replaced in general ones. Rewordings of a question match, different questions don't.
   - **Cover letter**: attached when a form has a cover letter upload, or pasted where it asks for the text; never sent otherwise. Choose it in the auto-apply settings (automatic = the file with "cover" in its name, a specific file, or none).
   - **Sites that reject automated submissions** (e.g. Ashby's "flagged as possible spam"): Reachout stops, never retries or hides itself, stops automating that job board, and offers **Apply in my browser**: the form link plus your details and answers, ready to copy (or use the extension).
+  - **Evaluation, after [career-ops](https://github.com/santifer/career-ops)** (Evaluate on a job, or Evaluate top 10): a report scored out of 5 from five dimensions (resume match, fit with the roles you target, pay, culture signals, red flags), each marked supported / partial / unknown, plus how sure it is. Blocks: A role summary (kind of role, level, remote, pay), B requirement-by-requirement match quoting your real resume lines, with gaps and how to handle them, C level and strategy, D pay, E tailoring (summary for this job, what to move up, ATS keyword coverage), F interview plan (STAR outlines from your resume, likely questions), G is the posting real and open (age, still listed, specificity, reposts, pay shown, fee scams, contractor wording, six-point role clarity), H drafted answers (to My answers, for review) and a one-page cover letter you edit and can attach to that job. Below 4.0/5 it recommends against applying. The local model writes the prose parts when it runs; every block also has a plain version without it. Lines in a posting aimed at AI tools are shown to you and ignored.
+  - **Liveness gate:** a posting is checked before it's evaluated or applied to; closed ones are marked Closed and never applied to.
+  - **More sources:** Workable, SmartRecruiters and Recruitee company boards, and the **Remote job boards** source (Remotive, Remote OK, Himalayas, Arbeitnow, Jobicy); the same job from several sources is shown once.
+  - **My rules:** roles you target, companies/domains to never apply to, lowest pay, remote only, no contract roles, visa sponsorship, most years asked, words to avoid, and a minimum score for auto-apply. A job that breaks a rule is marked Skip; auto-apply asks before applying anyway. A missing fact never breaks a rule.
+  - **Statuses** per job (Evaluated, Applied, Responded, Assessment, Interview, Offer, Rejected, Discarded, Skip, Hired), **Follow-ups** (after 7 days, twice at most, replies within a day, thank-you after an interview; drafts only, you send them) and **Insights** (reply rate by score, where you applied, kind of role and work setup; why jobs were skipped).
+  - **AI model** (career-ops runs on whichever AI tool you have; same idea here): local Ollama by default, or your own key for Claude, OpenAI, Gemini, OpenRouter, Groq, Mistral or DeepSeek, or any OpenAI-compatible server on your computer (LM Studio, llama.cpp). Keys are stored encrypted. With a cloud provider, the resume and job text you evaluate go to that provider.
+  - **Job boards** (`features/ai_jobs/boards/`, one small module per board, after career-ops' providers): 108 public, no-login readers, each tested live. 50 company job systems (Workday, SuccessFactors, Oracle Recruiting Cloud, Taleo, iCIMS, Eightfold, Cornerstone, PeopleSoft, Jobvite, BambooHR, Deel, Teamtailor, Personio, school-district systems, WordPress job sites, public Telegram job channels…) and 58 search boards (Hacker News, Built In, We Work Remotely, Remotive, the a16z talent network, JustJoin, NoFluffJobs, Bulldogjob, Prace.cz, Arbeitsagentur, Platsbanken, The Hub, Job Bank Canada, JobStreet, Kalibrr, ITviec, CareerViet, Yourator, Magneto, Manfred, Remotli, Joinup, HigherEdJobs, Amazon, Google, Apple, IBM, Atlassian…). Boards for other countries run only when your location is there, and boards that serve several countries search yours. **My companies**: paste a company's careers link (or type its name) and its board is recognised, checked live and read on every search.
+- **Any company's own website** (`sitejobs.py`): when a careers page isn't on a known job system, Reachout looks around it like a person would: the job board it embeds or links (a Greenhouse frame, a Workday link, the board its page loads in the background), its "Open roles" pages, the JobPosting data careers pages publish for Google, or its own job feed. Pages drawn by scripts are opened in a headless browser; it stops at bot checks instead of getting round them.
+- **Applying on company websites** (`siteapply.py`): auto-apply now also works on a company's own site. From the job page it finds the form behind the Apply button (or in a frame), fills it, and hands back anything only you can do. Sites that want an account first (Workday, iCIMS, Taleo…) are done in Watch mode, where you sign in yourself. It remembers per site which button worked and which sites always need you. LinkedIn, Naukri, Indeed and similar boards are never auto-applied to.
+- **Learns from your feedback** (`learning.py`): Good fit / Not for me (with a reason) on each match, the jobs you apply to, and what happens next (interview, offer, rejected) teach a small preference model of what you like: kinds of role, title words, skills, companies, remote, level. New matches move by up to 15 points and say why ("You liked jobs like this: React, frontend roles"); the AI's second opinion is told the same. Reasons you repeat become suggested rules that wait for your yes. **What it learned** shows your tastes, the suggestions, and whether higher scores have actually led to interviews (rates only once a score band has 5+ outcomes). Older lessons count less; you can make it forget.
+  - **More from career-ops:** tailored resume per job (PDF in Files, facts checked against your resume; lines that add anything are dropped; choose to send it for that job), interview and offer-negotiation prep, save the posting as PDF, closing dates, your earlier applications to the company, similar jobs you already evaluated, a warning when your resume changed after an evaluation, skills worth learning (Insights), closing applications silent for 60+ days, and a Monday digest notification.
+  - **Updates** (on your own computer, owner only): checks the backend, frontend and web checkouts against GitHub, fast-forwards only, refuses when you have local edits or commits, installs packages, rebuilds the pages and restarts. Undo goes back to the previous version (kept in `data/update-history.json`). Your data isn't touched.
 - **Getting the web search keys (optional; career sites need none).** Each user adds their own in AI job match → Search keys:
   - **Tavily** (free 1,000 searches/month, no card): sign up at https://app.tavily.com → the dashboard shows a key starting `tvly-` → copy it into Reachout.
   - **Brave Search** ($5 free credit/month, about 1,000 searches; a credit card is required): sign up at
@@ -63,12 +75,30 @@ for WhatsApp Web only) · openpyxl / pypdf (imports) · pywebpush (browser notif
 ## Project layout
 
 ```
-app.py              Core: config, security, encryption, accounts & sign-in, contacts, templates, files,
-                    campaigns (send jobs), WhatsApp linking, leads, bounces, page serving, startup
-bridge.py           Shared plumbing feature modules use (access to app.py, HTTP helper, timers, deadlines)
+app.py              Entry point: wires core/ and routes/ together, registers feature blueprints, starts workers
+core/               Building blocks shared by everything
+  config.py         Environment settings, limits and fixed texts
+  crypto.py         Encryption key, seal/unseal, keyed lookup hashes
+  http.py           The Flask app object, session cookie settings, Sentry
+  db.py             MongoDB connection (M)
+  storage.py        File storage: Cloudinary (encrypted) with GridFS fallback
+  accounts.py       Users, login sessions, account deletion, startup checks
+  validation.py     Input validation and the Invalid error
+  workspace.py      Per-user encrypted workspace (contacts, templates, settings, documents)
+  security.py       Rate limits, Netlify signed proxy, CSRF, security headers/CSP, login_required, error handlers
+  mail.py           System emails, the user's SMTP/IMAP connections
+  tables.py         CSV/Excel import, Excel export, {field} templates
+  whatsapp_store.py WhatsApp login storage, 2-hour expiry, browser linking
+  bounces.py        Domain checks and bounce detection
+  sentmail.py       Importing past sends from the Sent folder
+  sending.py        Campaign send jobs
+  pages.py          HTML page serving helpers (cookies, source tracking)
+routes/             HTTP API and pages, by area: auth, contacts, workspace_api, send, whatsapp, leads, site_pages
+migrations.py       One-off SQLite → MongoDB migration
+bridge.py           Shared plumbing feature modules use (bridge.C = the core helpers, HTTP helper, timers, deadlines)
 whatsapp.py         WhatsApp Web automation (Playwright); also a standalone CLI
 features/
-  apps.py           Applications tracker + the one mail sync (applications → replies → inbox → jobs → bounces)
+  apps/             Applications tracker + the one mail sync (statuses, noise, extract, mailbox, sync, routes, naukri, overview)
   replies.py        Reply detection, intent reading, suggested answers, sending replies in-thread
   inbox.py          Inbox insights: emails grouped by company and category
   jobs.py           Job alerts → scored job matches; scheduled email queue; hiring posts
@@ -78,7 +108,9 @@ features/
   portfolio.py      Projects for the website (from GitHub) + Git publishing
   site.py           Website builder: themes, sections, renderer, SEO, public pages, contact form
   finder.py         Email finder: HR/careers addresses from company websites → contacts
-  ai_jobs.py        AI job match: resume → search → ranking (LangChain, optional Ollama), auto-apply, My answers
+  ai_jobs/          AI job match (sources, providers, ranking, runs, answers, forms, apply, watch, routes,
+                    signals, evaluate, tracker, models, portals, extras, sitejobs, siteapply, learning; boards/ = job board readers)
+  updater.py        self-update from GitHub (local copies only)
   extension.py      API for the Reachout Autofill Chrome extension (personal extension key)
 tests/              pytest suite (security regressions + core flows)
 Dockerfile          The image Render runs
@@ -86,7 +118,7 @@ render.yaml         Render blueprint
 ```
 
 Each feature module exposes a Flask blueprint `bp`, registered at the bottom of `app.py`. Modules reach shared
-helpers through `bridge.C` (the core `app` module) rather than importing `app.py` directly.
+helpers through `bridge.C` (the `app` module, which looks names up live in `core/`) rather than importing them directly.
 
 ## How data is stored
 
@@ -201,5 +233,5 @@ Notes:
 2. Protect routes with `@login_required` (from `bridge`), which passes a `Workspace`; read/write user data with
    `ws.load()` / `ws.save()` inside `with ws.lock:`, and validate input with `C().v_text()`, `v_email()`, `v_int()`.
 3. Raise `C().Invalid("message", "field")` for user errors; the frontend shows it next to the field.
-4. Register the blueprint at the bottom of `app.py`, add any new collection to `USER_COLLECTIONS` so account
+4. Register the blueprint at the bottom of `app.py`, add any new collection to `USER_COLLECTIONS` (in `core/accounts.py`) so account
    deletion removes it, and add tests in `tests/`.

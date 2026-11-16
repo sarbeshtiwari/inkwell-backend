@@ -30,6 +30,18 @@ assert DB_NAME != "reachout"
 import app as A  # noqa: E402  (configured by the environment above)
 
 H = {"X-Requested-With": "fetch"}
+
+
+def patch_shared(monkeypatch, name, value, src=None):
+    """Replace a shared setting or helper (e.g. WHATSAPP_ENABLED, CLOUD, send_system_email) for one test.
+
+    Since the backend is split into modules, each module that imported the name holds its own reference;
+    this swaps every one of them that points at the same object, which is what patching the old single app.py did."""
+    original = getattr(src or A, name)
+    for mod in list(sys.modules.values()):
+        if getattr(mod, "__name__", "").split(".")[0] in ("app", "core", "routes", "features", "migrations", "bridge") \
+                and name in vars(mod) and vars(mod)[name] is original:
+            monkeypatch.setattr(mod, name, value)
 # The HTML pages live in the web/ folder (or on Netlify). Backend-only checkouts skip page tests.
 needs_pages = pytest.mark.skipif(not (A.WEB / "privacy.html").exists(), reason="web/ pages not present (API-only repo)")
 
@@ -66,3 +78,10 @@ def user():
 @pytest.fixture
 def anon():
     return A.app.test_client()
+
+
+@pytest.fixture(autouse=True)
+def _no_local_model(monkeypatch):
+    """Tests never call the local AI model (Ollama), even when one runs on this computer."""
+    from features.ai_jobs import models
+    monkeypatch.setattr(models, "ollama_up", lambda: False)

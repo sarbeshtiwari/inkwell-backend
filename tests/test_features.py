@@ -6,7 +6,7 @@ import json
 import time
 
 import pytest
-from conftest import A, H, needs_pages, client_for, make_user
+from conftest import A, H, needs_pages, client_for, make_user, patch_shared
 
 
 def test_health(anon):
@@ -15,7 +15,7 @@ def test_health(anon):
 
 def test_signup_and_login_with_code(anon, monkeypatch):
     sent = {}
-    monkeypatch.setattr(A, "send_system_email", lambda to, subject, text: sent.update(to=to, text=text))
+    patch_shared(monkeypatch, "send_system_email", lambda to, subject, text: sent.update(to=to, text=text))
     email = "new-person@example.com"
     r = anon.post("/api/auth/request-code", json={"email": email, "intent": "signup", "name": "New Person", "agree": True}, headers=H)
     assert r.status_code == 200
@@ -34,7 +34,7 @@ def test_signup_requires_agreement(anon):
 
 
 def test_wrong_code_is_rejected(anon, monkeypatch):
-    monkeypatch.setattr(A, "send_system_email", lambda *a: None)
+    patch_shared(monkeypatch, "send_system_email", lambda *a: None)
     uid, email = make_user()
     anon.post("/api/auth/request-code", json={"email": email}, headers=H)
     r = anon.post("/api/auth/verify-code", json={"email": email, "code": "000000"}, headers=H)
@@ -104,7 +104,7 @@ def test_legal_pages(anon):
 
 
 def test_whatsapp_switch(user, monkeypatch):
-    monkeypatch.setattr(A, "WHATSAPP_ENABLED", False)
+    patch_shared(monkeypatch, "WHATSAPP_ENABLED", False)
     c = user["client"]
     assert c.get("/api/me").get_json()["whatsapp"] is False
     assert c.get("/api/whatsapp").get_json()["state"] == "disabled"
@@ -126,14 +126,14 @@ def _sign(secret, exp_in=60, alg="HS256"):
     (None, False), (_sign("wrong"), False), (_sign("s3cret", exp_in=-600), False),
     (_sign("s3cret", alg="none"), False), (_sign("s3cret"), True)])
 def test_only_signed_netlify_requests_get_through(anon, monkeypatch, token, ok):
-    monkeypatch.setattr(A, "NETLIFY_PROXY_SECRET", "s3cret")
+    patch_shared(monkeypatch, "NETLIFY_PROXY_SECRET", "s3cret")
     headers = {"X-Nf-Sign": token} if token else {}
     assert (anon.get("/api/prefs", headers=headers).status_code == 200) is ok
     assert anon.get("/healthz").status_code == 200  # health checks always work
 
 
 def test_client_ip_from_signed_netlify_request(monkeypatch):
-    monkeypatch.setattr(A, "NETLIFY_PROXY_SECRET", "s3cret")
+    patch_shared(monkeypatch, "NETLIFY_PROXY_SECRET", "s3cret")
     with A.app.test_request_context(headers={"X-Nf-Sign": _sign("s3cret"), "X-Nf-Client-Connection-Ip": "203.0.113.7"}):
         assert A.client_ip() == "203.0.113.7"
     with A.app.test_request_context(headers={"X-Nf-Client-Connection-Ip": "203.0.113.7"}):
@@ -143,9 +143,9 @@ def test_client_ip_from_signed_netlify_request(monkeypatch):
 def test_system_email_failure_is_a_clean_error(anon, monkeypatch):
     def boom(*a, **k):
         raise OSError(101, "Network is unreachable")
-    monkeypatch.setattr(A, "DEV_OTP", False)
-    monkeypatch.setattr(A, "SMTP_HOST", "smtp.gmail.com")
-    monkeypatch.setattr(A, "_send_via_smtp", boom)
+    patch_shared(monkeypatch, "DEV_OTP", False)
+    patch_shared(monkeypatch, "SMTP_HOST", "smtp.gmail.com")
+    patch_shared(monkeypatch, "_send_via_smtp", boom)
     uid, email = make_user()
     r = anon.post("/api/auth/request-code", json={"email": email}, headers=H)
     assert r.status_code == 503 and "couldn't send" in r.get_json()["error"]
@@ -183,7 +183,7 @@ class FakeCloud:
 @pytest.fixture
 def cloud(monkeypatch):
     fake = FakeCloud()
-    monkeypatch.setattr(A, "CLOUD", fake)
+    patch_shared(monkeypatch, "CLOUD", fake)
     return fake
 
 
@@ -201,12 +201,12 @@ def test_files_go_to_cloudinary_encrypted_and_in_parts(user, cloud):
 
 def test_move_gridfs_files_to_cloudinary(user, cloud, monkeypatch):
     ws = user["ws"]
-    monkeypatch.setattr(A, "CLOUD", None)
+    patch_shared(monkeypatch, "CLOUD", None)
     ws.save_doc("letter.txt", b"cover letter")
     A.store_wa_blob(ws.uid, b"whatsapp login")
     A.M.site_images.insert_one({"_id": "a" * 32, "uid": ws.uid, "type": "image/png", "created": 0,
                                 "data": A.seal(base64.b64encode(b"PNGDATA").decode())})
-    monkeypatch.setattr(A, "CLOUD", cloud)
+    patch_shared(monkeypatch, "CLOUD", cloud)
     A.move_files_to_cloudinary(log=lambda *a: None)
     assert A.M.db["files.files"].count_documents({"metadata.uid": ws.uid}) == 0
     assert ws.doc_bytes("letter.txt") == b"cover letter"
@@ -242,7 +242,7 @@ def _notes(uid):
 
 
 def test_whatsapp_login_is_deleted_after_two_hours_and_user_is_told(user, monkeypatch):
-    monkeypatch.setattr(A, "WHATSAPP_ENABLED", True)
+    patch_shared(monkeypatch, "WHATSAPP_ENABLED", True)
     ws, c = user["ws"], user["client"]
     A.store_wa_blob(ws.uid, b"login")
     ws.update_settings(wa_connected=True, wa_linked_at="2026-01-01T00:00:00")
