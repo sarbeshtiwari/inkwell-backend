@@ -1,5 +1,7 @@
 # Reachout API (backend)
 
+**Live app:** [reachout-web.netlify.app](https://reachout-web.netlify.app) · **Frontend repo:** [reachout-frontend](https://github.com/sarbeshtiwari/reachout-frontend)
+
 Reachout helps people run their outreach and job search from one place:
 
 - **Outreach**: import contacts, write one message with `{name}`/`{company}` placeholders, and send everyone a
@@ -67,10 +69,18 @@ makes the API unreachable directly.
 
 ---
 
+## Architecture at a glance
+
+- **Flask 3 API** (app.py) wires the shared building blocks in core/ (config, MongoDB access, Fernet encryption, mail sending, storage, security, validation) to the HTTP routes in routes/ and the feature blueprints in features/, and starts the background workers.
+- **AI job matching** (features/ai_jobs/): 100+ job-board and ATS connectors in boards/; resume-based evaluation and ranking built on LangChain (langchain-core), with an optional local open-source model through Ollama (langchain-ollama); consent-based auto-apply on public application forms with Playwright.
+- **Outreach and inbox**: personal email and optional WhatsApp sends from the user's own accounts, reply detection and bounce handling.
+- **Data protection**: MongoDB with sensitive fields encrypted at rest (Fernet); uploaded files are stored in Cloudinary as still-encrypted objects.
+- **Delivery**: Docker image and render.yaml for Render, CI in GitHub Actions; the React + Vite frontend is deployed separately on Netlify.
+
 ## Tech
 
 Python 3.12 · Flask 3 · MongoDB (pymongo) · Fernet encryption (cryptography) · gunicorn · Playwright (Chromium,
-for WhatsApp Web only) · openpyxl / pypdf (imports) · pywebpush (browser notifications) · Sentry (optional).
+for WhatsApp Web and job auto-apply) · openpyxl / pypdf (imports) · pywebpush (browser notifications) · Sentry (optional) · LangChain (langchain-core, langchain-ollama) for AI job matching.
 
 ## Project layout
 
