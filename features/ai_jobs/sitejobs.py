@@ -20,8 +20,6 @@ from features.ai_jobs.providers import iso_day
 HOST_GUESSES = ("successfactors", "phenom", "radancy", "eploy", "consider", "wp_job_manager")
 MAX_PAGES = 40          # job pages read per careers site
 MAX_BYTES = 3_000_000
-JOB_LINK = re.compile(r"[/_-](jobs?|careers?|positions?|openings?|vacanc(?:y|ies)|opportunit(?:y|ies)|roles?|stellen|empleos?|vagas?)"
-                      r"(/|\?|#|$|-)", re.I)
 NOT_JOB = re.compile(r"\.(pdf|jpe?g|png|svg|gif|css|js|zip|docx?)(\?|$)|/(blog|news|press|privacy|terms|cookie|login|signin|"
                      r"sign-in|register|account|category|tag|about|contact|faq|benefits|culture|life|events?|life-at[\w-]*|[\w-]*diversity[\w-]*|[\w-]*inclusion[\w-]*|learning[\w-]*|values|how-we-hire|our-story|perks|locations?|offices?)(/|$)", re.I)
 JOB_TYPES = {"JobPosting"}

@@ -26,35 +26,6 @@ from features.ai_jobs.ranking import cosine, tokens
 
 # --- tailored resume + fact check -----------------------------------------------------------------------------
 
-NUM = re.compile(r"(?<![\w.])\d[\d,.]*\s?(?:%|x|k|m|\+|lpa|cr|users|people|ms)?(?![\w])", re.I)
-
-
-def fact_check(text, original):
-    """Numbers, skills and proper nouns in the tailored text that aren't in the original resume (should be none)."""
-    low = original.lower()
-    jm = J()
-    issues = []
-    for n in set(m.group(0).strip() for m in NUM.finditer(text)):
-        digits = re.sub(r"[^\d.]", "", n)
-        if digits and digits.strip(".") and digits.strip(".") not in re.sub(r"[^\d.\s]", " ", original):
-            issues.append(n)
-    have = set(jm.skill_hits(original, jm.SKILLS))
-    issues += [s for s in jm.skill_hits(text, jm.SKILLS) if s not in have and s not in ("C", "R")]
-    for name in set(re.findall(r"\b[A-Z][a-zA-Z]+(?:\s[A-Z][a-zA-Z]+)+\b", text)):
-        if name.lower() not in low and not re.match(r"(Professional|Technical|Work|Key|Selected|Relevant) ", name):
-            issues.append(name)
-    return sorted(set(issues))
-
-
-def clean_bullets(bullets, original):
-    """Keep only bullets whose facts are all in the original; report the ones dropped."""
-    kept, dropped = [], []
-    for b in bullets:
-        b = str(b).strip(" -•*")
-        if not b:
-            continue
-        (dropped if fact_check(b, original) else kept).append(b)
-    return kept, dropped
 
 
 def tailor(ws, job):
