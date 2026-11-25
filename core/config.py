@@ -10,6 +10,30 @@ BACKEND = Path(__file__).resolve().parent.parent  # backend/ (this file is backe
 HERE = BACKEND.parent  # project root: web/, data/ and legacy files live here, next to backend/
 
 
+def load_dotenv():
+    """Read KEY=VALUE lines from .env (project root, then backend/) into the environment, so running the app on this
+    computer uses the same settings as the hosted server. Variables already set (e.g. by Render) always win.
+    INKWELL_NO_DOTENV=1 turns this off (the test suite does, so it never reaches the real database)."""
+    if os.environ.get("INKWELL_NO_DOTENV") == "1":
+        return
+    for path in (HERE / ".env", BACKEND / ".env"):
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", line)
+            if not m:
+                continue
+            value = m[2].strip()
+            if value[:1] in "\"'" and value[-1:] == value[:1] and len(value) > 1:
+                value = value[1:-1]
+            else:
+                value = re.sub(r"\s+#.*$", "", value).strip()
+            os.environ.setdefault(m[1], value)
+
+
+load_dotenv()
+
+
 WEB = HERE / "web"
 
 

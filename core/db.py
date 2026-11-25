@@ -6,6 +6,12 @@ from pymongo import MongoClient
 from core.config import MONGODB_DB, MONGODB_URI
 
 
+def normalised(uri):
+    """Some copied connection strings separate options with ';' as well as '&'; MongoClient accepts only one kind."""
+    base, sep, opts = uri.partition("?")
+    return base + sep + opts.replace(";", "&") if sep else uri
+
+
 class Mongo:
     """Lazily connected handles to the MongoDB collections and GridFS bucket."""
 
@@ -13,7 +19,7 @@ class Mongo:
         self.client = self.db = self.files = None
 
     def connect(self):
-        self.client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=8000, appname="reachout", tz_aware=True)
+        self.client = MongoClient(normalised(MONGODB_URI), serverSelectionTimeoutMS=8000, appname="reachout", tz_aware=True)
         self.client.admin.command("ping")
         self.db = self.client[MONGODB_DB]
         self.files = GridFSBucket(self.db, bucket_name="files")

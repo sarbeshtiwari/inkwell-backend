@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 DB_NAME = f"reachout_test_{uuid.uuid4().hex[:8]}"
+os.environ["INKWELL_NO_DOTENV"] = "1"  # never read .env: it points at the live database
+for k in ("MONGODB_URI", "CLOUDINARY_URL"):
+    os.environ.pop(k, None)
 os.environ.update({
     "MONGODB_DB": DB_NAME,
     "DATA_DIR": tempfile.mkdtemp(prefix="reachout-test-"),
