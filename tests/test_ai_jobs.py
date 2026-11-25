@@ -8,6 +8,7 @@ import pytest
 from conftest import A, H, patch_shared
 
 from features import ai_jobs as AI
+from infra import operations
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +117,7 @@ def test_auto_apply_needs_consent_and_records_the_application(user, monkeypatch)
     patch_shared(monkeypatch, "apply_one", src=AI, value=lambda ws, job, submit=True, visible=False: {"state": "applied", "detail": "Application submitted.", "url": job["url"]})
     assert c.post("/api/ai-jobs/apply", json={"ids": [JOBS[0]["id"]]}, headers=H).status_code == 200
     for _ in range(100):
-        if AI.APPLYING[ws.uid]["state"] != "running":
+        if not operations.running(ws.uid, "ai_apply"):
             break
         time.sleep(0.05)
     assert ws.load("ai_applied", {})[JOBS[0]["id"]]["state"] == "applied"

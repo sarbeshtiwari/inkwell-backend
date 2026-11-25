@@ -7,6 +7,7 @@ import time
 
 import pytest
 from conftest import A, H, needs_pages, client_for, make_user, patch_shared
+from infra import locks
 
 
 def test_health(anon):
@@ -259,12 +260,12 @@ def test_whatsapp_login_is_deleted_after_two_hours_and_user_is_told(user, monkey
 def test_whatsapp_login_in_use_is_kept_until_the_send_finishes(user):
     ws = user["ws"]
     A.store_wa_blob(ws.uid, b"login")
-    A.BUSY.add(ws.uid)
+    lease = locks.acquire("wa-browser", ws.uid)  # a WhatsApp browser is open for this account (any process)
     try:
         A.expire_wa_sessions(now=time.time() + 3 * 3600)
         assert A.M.wa_sessions.find_one({"_id": ws.uid})
     finally:
-        A.BUSY.discard(ws.uid)
+        lease.release()
     A.expire_wa_sessions(now=time.time() + 3 * 3600)
     assert A.M.wa_sessions.find_one({"_id": ws.uid}) is None
 

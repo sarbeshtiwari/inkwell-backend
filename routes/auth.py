@@ -43,10 +43,9 @@ from core.http import app
 from core.mail import send_system_email
 from core.pages import can_track_opens
 from core.security import body, client_ip, login_required, rate_limited
-from core.sending import JOBS
 from core.validation import Invalid, v_email, v_text
-from core.whatsapp_store import WA_LINKS
 from core.workspace import Workspace, seed_workspace
+from infra import operations
 
 
 def otp_hash(email_hash, code):
@@ -293,10 +292,12 @@ def delete_account(ws):
             raise Invalid("That password isn't right.", "password")
     else:
         check_otp(u["email"], p.get("code"), ("delete",))
-    if ws.uid in JOBS:
-        JOBS[ws.uid].stop.set()
-    if ws.uid in WA_LINKS:
-        WA_LINKS[ws.uid].cancel.set()
+    try:
+        for kind in operations.KINDS:
+            for key in operations.running_keys(ws.uid, kind) or []:
+                operations.cancel(ws.uid, kind, key)
+    except Invalid:
+        pass  # deletion goes ahead; DELETED also stops background writers
     delete_user_data(ws.uid)
     session.clear()
     return jsonify(ok=True)

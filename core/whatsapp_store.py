@@ -1,5 +1,6 @@
 """WhatsApp: the saved (encrypted) login, its 2-hour expiry, and the browser that links/sends."""
 
+import base64
 import io
 import shutil
 import tarfile
@@ -22,6 +23,7 @@ from core.config import (
 from core.db import M
 from core.storage import drop_file, get_file, put_file
 from core.workspace import Workspace, bridge_mod
+from infra import locks, operations
 
 
 @contextmanager
@@ -77,8 +79,7 @@ def expire_wa_sessions(now=None):
     for row in M.wa_sessions.find({"$or": [{"created": {"$lt": cutoff}},
                                            {"created": {"$exists": False}, "updated": {"$lt": cutoff}}]}):
         uid = row["_id"]
-        link = WA_LINKS.get(uid)
-        if uid in BUSY or (link and link.state in ("starting", "qr", "saving")):
+        if browser_busy(uid) or operations.running(uid, "wa_link"):
             continue
         if not M.wa_sessions.find_one_and_delete({"_id": uid, "file_id": row["file_id"]}):
             continue  # changed meanwhile
@@ -106,16 +107,18 @@ def wa_expiry_watcher():
 SLOTS = threading.BoundedSemaphore(MAX_BROWSERS)
 
 
-BUSY, BUSY_LOCK = set(), threading.Lock()
+def browser_busy(uid):
+    """True while any process has a WhatsApp browser open for this account."""
+    return locks.holder("wa-browser", uid) is not None
 
 
 @contextmanager
 def browser_slot(uid, say=None):
-    """One WhatsApp browser per user, at most MAX_BROWSERS on the server."""
-    with BUSY_LOCK:
-        if uid in BUSY:
-            raise RuntimeError("WhatsApp is busy for your account (linking or sending). Try again shortly.")
-        BUSY.add(uid)
+    """One WhatsApp browser per account across every process (shared lease), and at most MAX_BROWSERS browsers on
+    this machine (a local limit: it protects this machine's memory)."""
+    lease = locks.try_acquire("wa-browser", uid)
+    if lease is None:
+        raise RuntimeError("WhatsApp is busy for your account (linking or sending). Try again shortly.")
     try:
         if not SLOTS.acquire(timeout=1):
             if say:
@@ -126,8 +129,7 @@ def browser_slot(uid, say=None):
         finally:
             SLOTS.release()
     finally:
-        with BUSY_LOCK:
-            BUSY.discard(uid)
+        lease.release()
 
 
 def open_whatsapp(pw, folder):
@@ -139,41 +141,58 @@ def open_whatsapp(pw, folder):
     return ctx, page
 
 
-class WALink:
-    def __init__(self):
-        self.state, self.error, self.qr = "starting", "", None
-        self.cancel = threading.Event()
+def link_whatsapp(op, ws):
+    """Show a QR code until the user scans it (or 3 minutes pass, or they cancel), then store the login.
+    Progress, including the QR image, lives in the shared record (encrypted) so any process can show it;
+    the image is erased when linking ends."""
+    stop = operations.CancelEvent(op)
+    stage = {"value": "starting"}
 
-
-WA_LINKS = {}
-
-
-def link_whatsapp(ws, link):
+    def set_stage(value, qr=None):
+        stage["value"] = value
+        op.update(public={"stage": value}, private={"qr": base64.b64encode(qr).decode() if qr else ""})
     try:
         from playwright.sync_api import sync_playwright
-        with browser_slot(ws.uid), wa_profile(ws, keep=lambda: link.state == "saving") as folder, \
+        with browser_slot(ws.uid), wa_profile(ws, keep=lambda: stage["value"] == "saving") as folder, \
                 sync_playwright() as pw:
             ctx, page = open_whatsapp(pw, folder)
             try:
                 deadline = time.time() + 180
-                while time.time() < deadline and not link.cancel.is_set():
+                while time.time() < deadline and not stop.is_set():
                     if page.locator(LOGGED_IN).count():
-                        link.state = "saving"
+                        set_stage("saving")
                         page.wait_for_timeout(8000)  # let WhatsApp finish saving the new login
                         break
                     qr = page.locator("canvas").first
                     if qr.count() and qr.is_visible():
-                        link.qr, link.state = qr.screenshot(), "qr"
+                        set_stage("qr", qr.screenshot())
                     page.wait_for_timeout(1500)
                 else:
-                    link.state, link.error = "error", ("Cancelled." if link.cancel.is_set()
-                                                       else "The QR code expired. Try again.")
+                    cancelled = stop.is_set()
+                    op.update(public={"stage": "error"}, private={"qr": ""})
+                    op.finish(operations.CANCELLED if cancelled else operations.FAILED,
+                              error="Cancelled." if cancelled else "The QR code expired. Try again.")
+                    return
             finally:
                 ctx.close()
         # wa_profile has encrypted and stored the login by now.
-        if link.state == "saving":
-            M.wa_sessions.update_one({"_id": ws.uid}, {"$set": {"created": time.time()}})  # a re-link starts a new 2 hours
-            ws.update_settings(wa_connected=True, wa_linked_at=datetime.now().isoformat(timespec="seconds"))
-            link.state = "connected"
+        M.wa_sessions.update_one({"_id": ws.uid}, {"$set": {"created": time.time()}})  # a re-link starts a new 2 hours
+        ws.update_settings(wa_connected=True, wa_linked_at=datetime.now().isoformat(timespec="seconds"))
+        op.finish(operations.DONE, public={"stage": "connected"}, private={"qr": ""})
+    except (operations.Cancelled, locks.LeaseLost):
+        raise
     except Exception as e:
-        link.state, link.error = "error", str(e).splitlines()[0]
+        op.finish(operations.FAILED, public={"stage": "error"}, private={"qr": ""}, error=str(e).splitlines()[0])
+
+
+def link_view(uid):
+    """(stage, error, qr bytes or None) of this account's latest linking attempt."""
+    v = operations.current(uid, "wa_link")
+    if not v:
+        return "", "", None
+    if v["state"] == operations.RUNNING:
+        qr = v.get("qr") or ""
+        return v.get("stage") or "starting", "", base64.b64decode(qr) if qr else None
+    if v["state"] in (operations.FAILED, operations.CANCELLED, operations.INTERRUPTED):
+        return "error", v.get("error") or "Linking stopped. Try again.", None
+    return v.get("stage") or "connected", "", None

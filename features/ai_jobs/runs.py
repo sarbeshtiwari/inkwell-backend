@@ -1,42 +1,51 @@
 """Match runs: starting a search, its status, search keys and auto-apply details."""
 
 import re
-import threading
 import time
 from datetime import datetime
 from flask import jsonify
 from bridge import login_required
 
 from features.ai_jobs.apply import COVER_DOC, can_hand_over, cover_file
-from features.ai_jobs.common import APPLYING, APPLY_PER_DAY, C, HANDOVER, J, OLLAMA_MODEL, RUNS, bp
+from features.ai_jobs.common import APPLY_PER_DAY, C, HANDOVER, J, OLLAMA_MODEL, bp
+from infra import locks, operations
+from infra.redact import error_text
 from features.ai_jobs.ranking import build_chain
 from features.ai_jobs import learning, signals
-from features.ai_jobs.evaluate import EVALUATING, get_rules, report_brief, stamp_seen
+from features.ai_jobs.evaluate import get_rules, report_brief, stamp_seen
 from features.ai_jobs.tracker import STATES, due_followups, set_status
 
 
-def run_match(uid, want, sources, use_llm):
+def run_match(op, uid, want, sources, use_llm):
+    """The search runs as one chain: cancelling stops it before the search or before results are saved (a search in
+    progress isn't interrupted part-way)."""
     ws = C().Workspace(uid)
-    run = RUNS[uid]
+    run = {"state": "running", "stage": "Reading your resume", "want": want, "sources": sources, "started": time.time(), "results": []}
     try:
+        op.checkpoint()
         resume = J().resume_text(ws) if not want.get("resume") else pdf_text(ws, want["resume"])
         profile = {**want, "resume": resume, "skills": [s for s in J().skill_hits(resume, J().SKILLS) if s not in ("C", "R")]}
         run["skills"] = profile["skills"]
         run["stage"] = "Searching"
+        op.update(public={"stage": "Searching"}, private={"skills": profile["skills"]})
+        op.checkpoint()
         keys = ws.load("ai_keys", {})
         from features.ai_jobs import models
         with models.use(models.config(ws) if use_llm else None):
             state = build_chain(keys, sources, ws.load("ai_portals", []) or [], want.get("location", "")).invoke(
                 {"profile": profile, "use_llm": use_llm, "taste": learning.model(ws), "taste_hint": learning.prompt_hint(ws)})
         results = state["ranked"]
+        op.checkpoint()  # cancelled while searching: keep the previous results, save nothing new
         mark_rules(ws, results, state.get("jds", {}))
         with ws.lock:
             ws.save("ai_jds", state.get("jds", {}))
         stamp_seen(ws, results)
         run.update(state="done", stage="Done", results=results, errors=state["errors"], engine=state["engine"],
                    considered=state.get("considered", 0))
+    except (operations.Cancelled, locks.LeaseLost):
+        raise
     except Exception as e:
-        print(f"[Inkwell] AI match failed: {e!r}", flush=True)
+        print(f"[Inkwell] AI match failed: {error_text(e, 200)}", flush=True)
         run.update(state="error", stage="Error", error="Something went wrong while matching. Please try again.")
     run["finished"] = time.time()
     with ws.lock:
@@ -83,8 +92,20 @@ def model_state(ws):
             "model_provider": (ws.load("ai_model", {}) or {}).get("provider") or "ollama"}
 
 
+def match_state(ws):
+    """The running search (from the shared record) or the last finished one."""
+    v = operations.current(ws.uid, "ai_match")
+    saved = ws.load("ai_match", None)
+    if v and v["state"] == operations.RUNNING:
+        return {"state": "running", "stage": v.get("stage", ""), "want": v.get("want", {}), "sources": v.get("sources", []),
+                "started": v["started"], "results": [], "skills": v.get("skills", [])}
+    if v and v["state"] == operations.INTERRUPTED and (saved or {}).get("finished", 0) < (v["started"] or 0):
+        return {**(saved or {}), "state": "error", "stage": "Error", "error": v["error"]}
+    return saved or {"state": "idle"}
+
+
 def public_state(ws):
-    run = RUNS.get(ws.uid) or ws.load("ai_match", None) or {"state": "idle"}
+    run = match_state(ws)
     keys = ws.load("ai_keys", {})
     applied = ws.load("ai_applied", {})
     out = {k: v for k, v in run.items() if k != "thread"}
@@ -97,10 +118,10 @@ def public_state(ws):
             r["status"] = "applied"
     return out | {"keys": {"tavily": bool(keys.get("tavily")), "brave": bool(keys.get("brave"))}, **model_state(ws), "resumes": [d["name"] for d in ws.documents() if d["name"].lower().endswith(".pdf")],
                   "details": ws.load("ai_apply_profile", {}), "consent": bool(ws.settings().get("auto_apply_consent")),
-                  "applying": APPLYING.get(ws.uid, {}), "apply_per_day": APPLY_PER_DAY,
+                  "applying": operations.batch_view(ws.uid, "ai_apply"), "apply_per_day": APPLY_PER_DAY,
                   "can_hand_over": can_hand_over(), "handover": HANDOVER.get(ws.uid, ""),
                   "documents": [d["name"] for d in ws.documents() if COVER_DOC.search(d["name"])], "cover_letter": cover_file(ws)[0],
-                  "evaluating": EVALUATING.get(ws.uid, {}), "statuses": {k: v[0] for k, v in STATES.items()},
+                  "evaluating": operations.batch_view(ws.uid, "ai_evaluate"), "statuses": {k: v[0] for k, v in STATES.items()},
                   "rules": get_rules(ws), "followups_due": sum(1 for f in due_followups(ws) if f["kind"] != "cold"),
             "feedback": {k: ("good" if "good" in v["signals"] else "bad") for k, v in (ws.load("ai_feedback", {}) or {}).items()
                          if {"good", "bad"} & set(v.get("signals", {}))},
@@ -133,12 +154,13 @@ def start(ws):
     for s in sources:
         if s in ("tavily", "brave") and not keys.get(s):
             raise core.Invalid(f"Add your {s.capitalize()} API key first, or untick it.", "sources")
-    if (RUNS.get(ws.uid) or {}).get("state") == "running":
+    if operations.running(ws.uid, "ai_match"):
         raise core.Invalid("A search is already running.", status=409)
     if core.rate_limited(("ai-match", ws.uid), 30, 86400):
         raise core.Invalid("You've run 30 searches today. Try again tomorrow.", status=429)
-    RUNS[ws.uid] = {"state": "running", "stage": "Reading your resume", "want": want, "sources": sources, "started": time.time(), "results": []}
-    threading.Thread(target=run_match, args=(ws.uid, want, sources, bool(p.get("use_llm", True))), daemon=True, name="ai-match").start()
+    op = operations.start(ws.uid, "ai_match", public={"stage": "Reading your resume"}, private={"want": want, "sources": sources},
+                          busy="A search is already running.")
+    operations.spawn(op, run_match, ws.uid, want, sources, bool(p.get("use_llm", True)), name="ai-match")
     return jsonify(ok=True)
 
 

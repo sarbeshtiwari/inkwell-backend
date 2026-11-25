@@ -11,7 +11,6 @@ The first sync reads the whole inbox; later syncs only read what's new, and the 
 
 import hashlib
 import re
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
@@ -21,6 +20,7 @@ from flask import Blueprint, jsonify, request
 import bridge
 from features import apps as fa
 from bridge import login_required
+from infra import locks, operations
 
 bp = Blueprint("inbox", __name__)
 
@@ -173,10 +173,6 @@ def company_for(subject, name, addr, body, category, me_names):
 
 # ================================================================= sync
 
-LOCK = {}
-PROGRESS = {}
-
-
 def ensure_indexes():
     M = C().M
     M.mail_index.create_index([("uid", 1), ("mid", 1)], unique=True)
@@ -184,12 +180,13 @@ def ensure_indexes():
     M.mail_index.create_index([("uid", 1), ("ts", -1)])
 
 
-def scan(ws, full=False):
+def scan(ws, full=False, op=None):
+    """Read the mailbox into mail_index. One at a time per account across all processes (shared lease); stops
+    between batches when cancelled (rows already indexed are kept; the sync position is only saved at the end)."""
+    if op is None:
+        with operations.start(ws.uid, "inbox", public=IDLE, busy="Inbox sync is already running.") as op:
+            return scan(ws, full, op)
     core = C()
-    lock = LOCK.setdefault(ws.uid, threading.Lock())
-    if not lock.acquire(blocking=False):
-        raise core.Invalid("Inbox sync is already running.", status=409)
-    PROGRESS[ws.uid] = {"stage": "Connecting to your mailbox…", "done": 0, "total": 0}
     state = ws.load("inbox_sync", {})
     try:
         profile = ws.profile()
@@ -207,13 +204,13 @@ def scan(ws, full=False):
             start_uid = 1
             if not full and state.get("validity") == validity and state.get("last_uid"):
                 start_uid = int(state["last_uid"]) + 1
-            PROGRESS[ws.uid]["stage"] = "Finding emails…"
+            op.update(public={"stage": "Finding emails…"})
             typ, data = imap.uid("SEARCH", None, f"UID {start_uid}:*")
             uids = [u for u in (data[0].split() if typ == "OK" and data and data[0] else []) if int(u) >= start_uid]
             if start_uid == 1:  # full read: rebuild, so emails deleted from the inbox drop out too
                 core.M.mail_index.delete_many({"uid": ws.uid})
             known = {r["mid"] for r in core.M.mail_index.find({"uid": ws.uid}, {"mid": 1})}
-            PROGRESS[ws.uid].update(stage="Reading emails…", total=len(uids))
+            op.update(public={"stage": "Reading emails…", "total": len(uids)})
             last_uid = int(state.get("last_uid") or 0) if not full else 0
             for i in range(0, len(uids), 40):
                 chunk = uids[i:i + 40]
@@ -240,7 +237,8 @@ def scan(ws, full=False):
                     except Exception:
                         pass  # duplicates from a concurrent run
                     added += len(rows)
-                PROGRESS[ws.uid]["done"] = min(len(uids), i + 40)
+                op.update(public={"done": min(len(uids), i + 40)})
+                op.checkpoint()
         finally:
             try:
                 imap.logout()
@@ -256,9 +254,6 @@ def scan(ws, full=False):
         state.update(last_error=secrets(str(e)) if isinstance(e, core.Invalid) else f"Sync failed: {error_text(e, 300)}")
         ws.save("inbox_sync", state)
         raise
-    finally:
-        PROGRESS.pop(ws.uid, None)
-        lock.release()
 
 
 def index_row(ws, raw, me, me_names):
@@ -286,13 +281,25 @@ def index_row(ws, raw, me, me_names):
                                "app_status": app_status, "msgid": mid})}
 
 
+IDLE = {"stage": "Connecting to your mailbox…", "done": 0, "total": 0}
+
+
+def progress_of(uid):
+    """(running, {"stage", "done", "total"}) from the shared record, as the API has always returned it."""
+    v = operations.current(uid, "inbox")
+    if not v or v["state"] != operations.RUNNING:
+        return False, None
+    return True, {k: v.get(k) for k in ("stage", "done", "total")}
+
+
 def run_in_background(ws, full=False):
-    def go():
-        try:
-            scan(ws, full=full)
-        except Exception as e:
-            print(f"[Inkwell] inbox sync: {e}", flush=True)
-    threading.Thread(target=go, daemon=True, name=f"inbox-sync-{ws.uid[:6]}").start()
+    """Start a sync unless one is running (anywhere). Returns False if one already was."""
+    try:
+        op = operations.start(ws.uid, "inbox", public=IDLE, busy="Inbox sync is already running.")
+    except locks.LockTimeout:
+        return False
+    operations.spawn(op, lambda op: scan(ws, full=full, op=op), name=f"inbox-sync-{ws.uid[:6]}")
+    return True
 
 
 # ================================================================= API
@@ -354,10 +361,11 @@ def summary(ws):
                     "app": {"id": a["id"], "status": a.get("status", ""), "role": a.get("role", "")} if a else None})
     out.sort(key=lambda c: -c["count"])
     state = ws.load("inbox_sync", {})
+    running, progress = progress_of(ws.uid)
     return jsonify(companies=out, categories={k: {"label": v[0], "color": v[1], "job": v[2]} for k, v in CATEGORIES.items()},
                    by_category=cats, months=[{"month": m, **v} for m, v in sorted(months.items())][-24:], total=total,
                    sync={**{k: state.get(k) for k in ("last_ok", "last_error", "full_done", "added")},
-                         "running": ws.uid in PROGRESS, "progress": PROGRESS.get(ws.uid)},
+                         "running": running, "progress": progress},
                    email_ready=bool(ws.profile().get("smtp_password")))
 
 
@@ -401,8 +409,7 @@ def edit_company(ws, key):
 def sync(ws):
     if not ws.profile().get("smtp_password"):
         raise C().Invalid("Set up email on the Profile page first, so Inkwell can read your inbox.")
-    if ws.uid not in PROGRESS:
-        run_in_background(ws, full=bool(C().body().get("full")))
+    if run_in_background(ws, full=bool(C().body().get("full"))):  # False if one is already running
         time.sleep(0.3)
     return jsonify(ok=True, running=True)
 
@@ -410,5 +417,6 @@ def sync(ws):
 @bp.get("/api/inbox/progress")
 @login_required
 def progress(ws):
-    return jsonify(running=ws.uid in PROGRESS, progress=PROGRESS.get(ws.uid),
+    running, progress = progress_of(ws.uid)
+    return jsonify(running=running, progress=progress,
                    last_error=ws.load("inbox_sync", {}).get("last_error", ""))

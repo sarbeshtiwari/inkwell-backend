@@ -6,7 +6,7 @@ from flask import jsonify, request
 from bridge import login_required
 
 from features.apps.common import C, bp
-from features.apps.mailbox import PROGRESS, recompute
+from features.apps.mailbox import recompute, sync_running
 from features.apps.naukri import naukri_stats
 from features.apps.routes import public
 from features.apps.statuses import ACTIVE, STATUSES
@@ -212,5 +212,5 @@ def overview(ws):
                    "linkedin": {"connected": bool(li.get("token")) and li.get("expires_at", 0) > time.time(),
                                 "name": li.get("name"), "posts": len(ws.load("li_posts", []))},
                    "naukri": {"connected": bool(nk.get("connected")), **naukri_stats(ws)}},
-        sync={"last_ok": state.get("last_ok"), "last_error": state.get("last_error"), "running": ws.uid in PROGRESS,
+        sync={"last_ok": state.get("last_ok"), "last_error": state.get("last_error"), "running": sync_running(ws.uid),
               "next_run": next_run(sync_prefs(ws), state.get("last_auto", "")).isoformat(timespec="minutes") if sync_prefs(ws)["auto"] else None})

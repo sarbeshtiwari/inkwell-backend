@@ -15,6 +15,7 @@ from core.db import M
 from core.mail import imap_connect
 from core.validation import Invalid
 from core.workspace import Workspace, bridge_mod
+from infra import locks
 
 
 def domain_problem(domain, cache):
@@ -185,15 +186,20 @@ def bounce_watcher():
                 due = BOUNCE_CHECK_SOON.get(uid, 0)
                 if (due and now >= due) or now - last.get(uid, 0) > 600:
                     from core.sending import (
-                        JOBS,  # (late: sending also uses this module)
+                        send_running,  # (late: sending also uses this module)
                     )
-                    if uid in JOBS and JOBS[uid].running:
+                    if send_running(uid):
                         continue
                     BOUNCE_CHECK_SOON.pop(uid, None)
                     last[uid] = now
+                    lease = locks.try_acquire("bounce-check", uid, ttl=300)  # one check per account across processes
+                    if lease is None:
+                        continue
                     try:
                         bridge_mod().with_deadline(240, check_bounces, Workspace(uid), days=4)
                     except Exception as e:
                         print(f"[Inkwell] bounce check skipped for an account: {getattr(e, 'message', e)}", flush=True)
+                    finally:
+                        lease.release()
         except Exception as e:
             print(f"[Inkwell] bounce watcher error: {e}", flush=True)

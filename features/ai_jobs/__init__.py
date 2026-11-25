@@ -23,8 +23,8 @@ models (choice of AI provider), boards/ (job board readers), portals (My compani
 prep, deadlines, skills to learn, stale applications, weekly digest). Ideas from career-ops (github.com/santifer/career-ops)."""
 
 from .common import (  # noqa: F401
-    APPLYING, APPLY_LOCK, APPLY_PER_DAY, C, HANDOVER, J,
-    LIVE, Live, MAX_RESULTS, OLLAMA_MODEL, OLLAMA_URL, RUNS,
+    APPLY_LOCK, APPLY_PER_DAY, C, HANDOVER, J,
+    LIVE, Live, MAX_RESULTS, OLLAMA_MODEL, OLLAMA_URL,
     RUN_SECONDS, UA, bp, get_json, plain,
 )
 from .sources import (  # noqa: F401

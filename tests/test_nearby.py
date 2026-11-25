@@ -3,6 +3,7 @@
 from conftest import H
 
 from features import nearby as N
+from infra import operations
 
 
 def fake_places(lat, lon, radius_km):
@@ -21,8 +22,8 @@ def test_search_by_city_and_check(user, monkeypatch):
     assert c.post("/api/nearby/search", json={"country": "India"}, headers=H).status_code == 400
     monkeypatch.setattr(N, "check_company", lambda row, city: {"careers": "https://acme.example/careers", "board": "", "openings": 2, "openings_country": 2, "country": "India",
                                                                  "openings_here": 1, "jobs": [], "emails": ["careers@acme.example"], "checked": 1, "note": ""})
-    N.CHECKS[ws.uid] = {"state": "running", "total": 1, "done": 0, "current": ""}
-    N.run_checks(ws.uid, ["N1"])
+    with operations.start(ws.uid, "nearby", public={"total": 1, "done": 0}) as op:
+        N.run_checks(op, ws.uid, ["N1"])
     d = c.get("/api/nearby").get_json()
     assert d["companies"][0]["info"]["openings"] == 2 and d["checking"]["state"] == "done"
 

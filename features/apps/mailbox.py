@@ -2,8 +2,6 @@
 
 import hashlib
 import re
-import threading
-import time
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 import bridge
@@ -12,6 +10,7 @@ from features.apps.common import C
 from features.apps.extract import body_text, calendar_start, extract, naukri_events, snippet
 from features.apps.noise import ME_NAMES, NOISE_FROM, NOISE_SUBJECT, my_name_parts, norm_company, norm_role, tidy
 from features.apps.statuses import ACTIVE, STATUSES, classify
+from infra import operations
 from infra.redact import error_text, secrets
 
 
@@ -68,20 +67,29 @@ def fetch_batch(imap, nums, what):
     return out
 
 
-SYNC_LOCK = {}  # uid -> Lock; one sync per account at a time
+IDLE = {"stage": "Connecting to your mailbox…", "done": 0, "total": 0}
 
 
-PROGRESS = {}   # uid -> {"stage", "done", "total", "started"}
+def progress_of(uid):
+    """(running, {"stage", "done", "total", "started"}) for this account's application sync, from the shared record."""
+    v = operations.current(uid, "apps_sync")
+    if not v or v["state"] != operations.RUNNING:
+        return False, None
+    return True, {**{k: v.get(k) for k in ("stage", "done", "total")}, "started": v["started"]}
 
 
-def scan(ws, full=False, notify=True):
-    """Read application emails and update ws['applications']. Returns a summary dict."""
+def sync_running(uid):
+    return operations.running(uid, "apps_sync")
+
+
+def scan(ws, full=False, notify=True, op=None):
+    """Read application emails and update ws['applications']. Returns a summary dict.
+    One at a time per account across processes; when cancelled it stops between batches, before anything is saved."""
+    if op is None:
+        with operations.start(ws.uid, "apps_sync", public=IDLE, busy="A sync is already running.") as op:
+            return scan(ws, full, notify, op)
     core = C()
-    lock = SYNC_LOCK.setdefault(ws.uid, threading.Lock())
-    if not lock.acquire(blocking=False):
-        raise core.Invalid("A sync is already running.", status=409)
     state = ws.load("apps_sync", {})
-    PROGRESS[ws.uid] = {"stage": "Connecting to your mailbox…", "done": 0, "total": 0, "started": time.time()}
     try:
         profile = ws.profile()
         imap = core.imap_connect(profile)
@@ -98,9 +106,9 @@ def scan(ws, full=False, notify=True):
         added = updated = mails = 0
         changes = []
         try:
-            PROGRESS[ws.uid]["stage"] = "Searching your mailbox…"
+            op.update(public={"stage": "Searching your mailbox…"})
             ids = search_ids(imap, since, is_gmail)
-            PROGRESS[ws.uid].update(stage="Reading emails…", total=len(ids))
+            op.update(public={"stage": "Reading emails…", "total": len(ids)})
             wanted = []
             for i in range(0, len(ids), 200):
                 chunk = ids[i:i + 200]
@@ -119,7 +127,7 @@ def scan(ws, full=False, notify=True):
                         seen.add(key)
                         continue
                     wanted.append((num, key, mid, subject, sender, str(h.get("Date") or "")))
-            PROGRESS[ws.uid].update(total=len(wanted), done=0)
+            op.update(public={"total": len(wanted), "done": 0})
             for i in range(0, len(wanted), 25):
                 chunk = wanted[i:i + 25]
                 bodies = fetch_batch(imap, [c[0] for c in chunk], "(BODY.PEEK[]<0.400000>)")
@@ -138,7 +146,8 @@ def scan(ws, full=False, notify=True):
                     added += a
                     updated += u
                     changes += ch
-                PROGRESS[ws.uid]["done"] = min(len(wanted), i + 25)
+                op.update(public={"done": min(len(wanted), i + 25)})
+                op.checkpoint()
         finally:
             try:
                 imap.logout()
@@ -161,9 +170,6 @@ def scan(ws, full=False, notify=True):
                      last_error=secrets(str(e)) if isinstance(e, core.Invalid) else f"Sync failed: {error_text(e, 300)}")
         ws.save("apps_sync", state)
         raise
-    finally:
-        PROGRESS.pop(ws.uid, None)
-        lock.release()
 
 
 def ingest(apps, msg, mid, subject, sender, date_h, me_names=()):

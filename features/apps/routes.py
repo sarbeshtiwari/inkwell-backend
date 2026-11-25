@@ -1,7 +1,6 @@
 """Applications API: list, edit, add, delete, sync now and sync settings."""
 
 import re
-import threading
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -9,9 +8,10 @@ from flask import jsonify
 from bridge import login_required
 
 from features.apps.common import C, bp
-from features.apps.mailbox import PROGRESS, app_id, recompute, scan
+from features.apps.mailbox import IDLE, app_id, progress_of, recompute, scan
 from features.apps.statuses import STATUSES
-from features.apps.sync import MAIL_SYNC, next_run, sync_all, sync_prefs
+from features.apps.sync import mail_sync_progress, next_run, start_sync, sync_prefs
+from infra import locks, operations
 
 
 def public(a):
@@ -22,12 +22,13 @@ def public(a):
 
 
 def run_in_background(ws, full):
-    def go():
-        try:
-            scan(ws, full=full)
-        except Exception as e:
-            print(f"[Inkwell] apps sync: {e}", flush=True)
-    threading.Thread(target=go, daemon=True, name=f"apps-sync-{ws.uid[:6]}").start()
+    """Start an application sync unless one is running (in any process). Returns False if one already was."""
+    try:
+        op = operations.start(ws.uid, "apps_sync", public=IDLE, busy="A sync is already running.")
+    except locks.LockTimeout:
+        return False
+    operations.spawn(op, lambda op: scan(ws, full=full, op=op), name=f"apps-sync-{ws.uid[:6]}")
+    return True
 
 
 @bp.get("/api/apps")
@@ -39,10 +40,11 @@ def list_apps(ws):
             recompute(a)
     state, p = ws.load("apps_sync", {}), sync_prefs(ws)
     nxt = next_run(p, state.get("last_auto", ""))
+    running, progress = progress_of(ws.uid)
     return jsonify(apps=[public(a) for a in apps.values() if not a.get("merged_into")],
                    statuses={k: {"label": v[0], "rank": v[1], "terminal": v[2]} for k, v in STATUSES.items()},
                    sync={**{k: state.get(k) for k in ("last_run", "last_ok", "last_error", "full_done", "emails", "added", "updated")},
-                         "running": ws.uid in PROGRESS, "progress": PROGRESS.get(ws.uid), "prefs": p,
+                         "running": running, "progress": progress, "prefs": p,
                          "next_run": nxt.isoformat(timespec="minutes") if p["auto"] else None},
                    email_ready=bool(ws.profile().get("smtp_password")))
 
@@ -63,10 +65,9 @@ def get_app(ws, aid):
 def sync_now(ws):
     if not ws.profile().get("smtp_password"):
         raise C().Invalid("Set up email on the Profile page first, so Inkwell can read your inbox.")
-    if ws.uid in PROGRESS:
-        return jsonify(ok=True, running=True)
     full = bool(C().body().get("full")) or not ws.load("apps_sync", {}).get("full_done")
-    run_in_background(ws, full)
+    if not run_in_background(ws, full):
+        return jsonify(ok=True, running=True)
     time.sleep(0.3)
     return jsonify(ok=True, running=True, full=full)
 
@@ -74,7 +75,8 @@ def sync_now(ws):
 @bp.get("/api/apps/progress")
 @login_required
 def progress(ws):
-    return jsonify(running=ws.uid in PROGRESS, progress=PROGRESS.get(ws.uid),
+    running, progress = progress_of(ws.uid)
+    return jsonify(running=running, progress=progress,
                    last_error=ws.load("apps_sync", {}).get("last_error", ""))
 
 
@@ -175,7 +177,8 @@ def mail_sync_status(ws):
     state, p = ws.load("mail_sync", {}), sync_prefs(ws)
     apps_state = ws.load("apps_sync", {})
     last = state.get("last_ok") or apps_state.get("last_ok")
-    return jsonify(running=ws.uid in MAIL_SYNC or ws.uid in PROGRESS, progress=MAIL_SYNC.get(ws.uid), last_ok=last,
+    running, progress = mail_sync_progress(ws.uid)
+    return jsonify(running=running or progress_of(ws.uid)[0], progress=progress, last_ok=last,
                    last_error=state.get("last_error", ""), summary=state.get("summary", ""), prefs=p,
                    next_run=next_run(p, apps_state.get("last_auto", "")).isoformat(timespec="minutes")
                    if p["auto"] and ws.profile().get("smtp_password") else None,
@@ -187,9 +190,6 @@ def mail_sync_status(ws):
 def mail_sync_now(ws):
     if not ws.profile().get("smtp_password"):
         raise C().Invalid("Add your Gmail app password below first.")
-    if ws.uid in MAIL_SYNC:
-        return jsonify(ok=True, running=True)
-    full = bool(C().body().get("full"))
-    threading.Thread(target=sync_all, args=(ws.uid, full), daemon=True, name=f"mail-sync-{ws.uid[:6]}").start()
-    time.sleep(0.3)
+    if start_sync(ws.uid, bool(C().body().get("full"))):  # False if one is already running
+        time.sleep(0.3)
     return jsonify(ok=True, running=True)

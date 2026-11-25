@@ -11,7 +11,6 @@ the resume and the posting only: it is told never to invent experience, and its 
 Without the model, every block still has a plain deterministic version."""
 
 import re
-import threading
 import time
 from collections import Counter
 from datetime import datetime
@@ -20,10 +19,11 @@ from flask import jsonify
 from bridge import login_required
 
 from features.ai_jobs.common import C, J, bp
+from infra import locks, operations
+from infra.redact import error_text
 from features.ai_jobs.ranking import cosine, tokens, years_asked
 from features.ai_jobs import models, signals
 
-EVALUATING = {}  # uid -> {"state", "total", "done", "current"}
 
 DEFAULT_RULES = {"blacklist": [], "min_salary": 0, "currency": "", "remote_only": False, "no_contract": False,
                  "need_sponsorship": False, "max_years": 0, "avoid_words": [], "targets": [], "min_score_to_apply": 0.0,
@@ -386,20 +386,20 @@ def save_report(ws, report):
                     status="review", source="ai", learned_from=f"{report['title']} · {report['company']}")
 
 
-def run_batch(uid, jids):
+def run_batch(op, uid, jids):
+    """Evaluate one job at a time; cancelling stops before the next job (saved reports stay)."""
     ws = C().Workspace(uid)
-    st = EVALUATING[uid]
-    try:
-        for jid in jids:
-            try:
-                job = find_job(ws, jid)
-                st["current"] = f"{job['title']} · {job['company']}"
-                save_report(ws, evaluate_job(ws, job))
-            except Exception as e:
-                print(f"[Inkwell] evaluation failed: {e!r}", flush=True)
-            st["done"] += 1
-    finally:
-        st["state"] = "done"
+    for jid in jids:
+        op.checkpoint()
+        try:
+            job = find_job(ws, jid)
+            op.update(private={"current": f"{job['title']} · {job['company']}"})
+            save_report(ws, evaluate_job(ws, job))
+        except (operations.Cancelled, locks.LeaseLost):
+            raise
+        except Exception as e:
+            print(f"[Inkwell] evaluation failed: {error_text(e, 200)}", flush=True)
+        op.update(inc={"done": 1})
 
 
 def report_brief(r):
@@ -428,13 +428,14 @@ def evaluate_many(ws):
     ids = [i for i in ids if i in results]
     if not ids:
         raise core.Invalid("Pick at least one job to evaluate.")
-    if (EVALUATING.get(ws.uid) or {}).get("state") == "running":
+    if operations.running(ws.uid, "ai_evaluate"):
         raise core.Invalid("Already evaluating. Wait for it to finish.", status=409)
     for _ in ids:
         if core.rate_limited(("ai-eval", ws.uid), 150, 86400):
             raise core.Invalid("You've evaluated 150 jobs today. Try again tomorrow.", status=429)
-    EVALUATING[ws.uid] = {"state": "running", "total": len(ids), "done": 0, "current": ""}
-    threading.Thread(target=run_batch, args=(ws.uid, ids), daemon=True, name="ai-evaluate").start()
+    op = operations.start(ws.uid, "ai_evaluate", public={"total": len(ids), "done": 0}, private={"current": ""},
+                          busy="Already evaluating. Wait for it to finish.")
+    operations.spawn(op, run_batch, ws.uid, ids, name="ai-evaluate")
     return jsonify(ok=True, total=len(ids))
 
 

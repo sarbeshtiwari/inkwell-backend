@@ -7,6 +7,7 @@ import pytest
 from conftest import H
 
 from features import finder as F
+from infra import operations
 
 
 @pytest.mark.parametrize("email,kind", [
@@ -89,7 +90,7 @@ def test_csv_upload_reads_company_and_website_columns(user, fake_web):
     data = b"Company Name,Website\nAcme,acme.com\nNorthwind,northwind.example\n"
     r = user["client"].post("/api/finder/scan", data={"file": (io.BytesIO(data), "sites.csv")}, headers=H, content_type="multipart/form-data")
     assert r.status_code == 200 and r.get_json()["total"] == 2
-    F.RUNS[user["uid"]].stop.set()
+    operations.cancel(user["uid"], "finder")
 
 
 def test_website_is_required(user):
@@ -101,4 +102,4 @@ def test_csv_without_a_header_is_a_plain_list_of_sites(user, fake_web):
     data = b"acme.com\nhttps://northwind.example\n"
     r = user["client"].post("/api/finder/scan", data={"file": (io.BytesIO(data), "sites.csv")}, headers=H, content_type="multipart/form-data")
     assert r.status_code == 200 and r.get_json()["total"] == 2
-    F.RUNS[user["uid"]].stop.set()
+    operations.cancel(user["uid"], "finder")

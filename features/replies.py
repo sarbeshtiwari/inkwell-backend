@@ -14,7 +14,6 @@ every 3 minutes, from the last message seen.
 """
 
 import re
-import threading
 import time
 from datetime import date, datetime, timedelta
 from email.utils import getaddresses, parseaddr
@@ -25,9 +24,9 @@ from flask import Blueprint, jsonify, request
 import bridge
 from features import apps as fa
 from bridge import login_required
+from infra import locks
 
 bp = Blueprint("replies", __name__)
-LOCKS = {}
 
 
 def C():
@@ -345,9 +344,10 @@ def apply_to_contact(ws, rid, rec):
 
 def scan(ws, first_days=21):
     core = C()
-    lock = LOCKS.setdefault(ws.uid, threading.Lock())
-    if not lock.acquire(blocking=False):
+    lease = locks.try_acquire("replies-scan", ws.uid)  # one scan per account across processes
+    if lease is None:
         return {"found": 0, "skipped": "busy"}
+    locks.push(lease)  # account writes during the scan are fenced by this lease
     state = ws.load("replies_sync", {})
     found = []
     try:
@@ -406,7 +406,8 @@ def scan(ws, first_days=21):
         ws.save("replies_sync", state)
         raise
     finally:
-        lock.release()
+        locks.pop(lease)
+        lease.release()
     announce(ws, found)
     return {"found": len(found)}
 
@@ -484,8 +485,7 @@ def tick():
     for uid in recent:
         if now - LAST.get(uid, 0) < 170:
             continue
-        job = core.JOBS.get(uid)
-        if job and job.running:
+        if core.sending.send_running(uid):
             continue  # don't compete with a campaign for the mailbox
         ws = core.Workspace(uid)
         if not ws.profile().get("smtp_password"):

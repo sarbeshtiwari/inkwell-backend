@@ -42,14 +42,24 @@ def http(method, url, *, token=None, timeout=30, **kw):
 
 
 def every(seconds, fn, name):
-    """Run fn() forever in a daemon thread, every `seconds`, logging (not raising) errors."""
+    """Run fn() forever in a daemon thread, every `seconds`, logging (not raising) errors.
+    Each run holds the shared lease `loop:<name>`, so when several processes run the app, one runs it at a time."""
+    from infra import locks
+    from infra.redact import error_text
+
     def loop():
         while True:
             time.sleep(seconds)
             try:
-                fn()
+                lease = locks.try_acquire(f"loop:{name}")
+                if lease is None:
+                    continue  # another process is running this loop right now
+                try:
+                    fn()
+                finally:
+                    lease.release()
             except Exception as e:  # keep the loop alive
-                print(f"[Inkwell] {name}: {e}", flush=True)
+                print(f"[Inkwell] {name}: {error_text(e, 200)}", flush=True)
     threading.Thread(target=loop, daemon=True, name=name).start()
 
 

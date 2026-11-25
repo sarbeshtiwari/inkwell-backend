@@ -1,29 +1,32 @@
 """Auto-apply API: start applying, the live view, Fill & finish, and the Apply-in-my-browser kit."""
 
-import threading
 import time
 from flask import jsonify
 from bridge import login_required
 
 from features.ai_jobs.answers import answer_for, norm_q, q_score, same_company
 from features.ai_jobs.apply import apply_one, closed_result, apply_url, apply_values, can_hand_over, record_application, resume_file
-from features.ai_jobs.common import APPLYING, APPLY_PER_DAY, C, HANDOVER, LIVE, bp
+from features.ai_jobs.common import APPLY_PER_DAY, C, HANDOVER, LIVE, bp
+from infra import operations
+from infra.redact import error_text
 from features.ai_jobs.tracker import set_status
 from features.ai_jobs.watch import run_watch
 
 
-def run_apply(uid, picks, visible=False):
+def run_apply(op, uid, picks, visible=False):
+    """Submit applications one by one. Cancelling stops before the next application; one being submitted finishes and
+    is recorded. Nothing already submitted is retried."""
     if visible:
-        return run_watch(uid, picks)
+        return run_watch(op, uid, picks)
     ws = C().Workspace(uid)
-    st = APPLYING[uid]
     try:
         for job in picks:
-            st["current"] = job["title"]
+            op.checkpoint()  # before submitting: a cancelled run, or one that lost its lease, stops here
+            op.update(private={"current": job["title"]})
             try:
                 res = closed_result(job) or apply_one(ws, job, submit=True, visible=visible)
             except Exception as e:
-                print(f"[Inkwell] auto-apply error: {e}", flush=True)
+                print(f"[Inkwell] auto-apply error: {error_text(e, 200)}", flush=True)
                 res = {"state": "needs_you", "detail": "The application page didn't load as expected. Apply on the site.", "url": job["url"]}
             res["at"] = time.time()
             with ws.lock:
@@ -35,9 +38,8 @@ def run_apply(uid, picks, visible=False):
             if res["state"] in ("applied", "closed"):
                 set_status(ws, job["id"], "applied" if res["state"] == "applied" else "discarded",
                            note="" if res["state"] == "applied" else "Posting closed")
-            st["done"] += 1
+            op.update(inc={"done": 1})
     finally:
-        st["state"] = "done"
         from features.notify import notify
         ok = sum(1 for j in picks if (ws.load("ai_applied", {}).get(j["id"]) or {}).get("state") == "applied")
         notify(uid, f"Inkwell AI applied to {ok} job{'s' if ok != 1 else ''}", f"{len(picks) - ok} need you to finish them.",
@@ -80,14 +82,15 @@ def apply(ws):
     picks = gate(ws, picks, bool(core.body().get("anyway")))
     if not ws.profile().get("phone"):
         raise core.Invalid("Add your phone number on the Profile page first; application forms ask for it.", "phone")
-    if (APPLYING.get(ws.uid) or {}).get("state") == "running":
+    if operations.running(ws.uid, "ai_apply"):
         raise core.Invalid("Already applying. Wait for it to finish.", status=409)
     for _ in picks:
         if core.rate_limited(("ai-apply", ws.uid), APPLY_PER_DAY, 86400):
             raise core.Invalid(f"Inkwell AI applies to at most {APPLY_PER_DAY} jobs a day.", status=429)
     visible = bool(core.body().get("watch")) and can_hand_over()
-    APPLYING[ws.uid] = {"state": "running", "total": len(picks), "done": 0, "current": "", "visible": visible}
-    threading.Thread(target=run_apply, args=(ws.uid, picks, visible), daemon=True, name="ai-apply").start()
+    op = operations.start(ws.uid, "ai_apply", public={"total": len(picks), "done": 0, "visible": visible}, private={"current": ""},
+                          busy="Already applying. Wait for it to finish.")
+    operations.spawn(op, run_apply, ws.uid, picks, visible, name="ai-apply")
     return jsonify(ok=True, total=len(picks))
 
 
@@ -99,7 +102,7 @@ def live_view(ws):
     st = LIVE.get(ws.uid)
     if not st:
         return jsonify(active=False)
-    busy = (APPLYING.get(ws.uid) or {}).get("state") == "running" or ws.uid in HANDOVER
+    busy = operations.running(ws.uid, "ai_apply") or ws.uid in HANDOVER
     return jsonify(active=busy or time.time() - st["at"] < 120, job=st["job"], log=st["log"], at=st["at"],
                    frame=("data:image/jpeg;base64," + base64.b64encode(st["frame"]).decode()) if st["frame"] else "")
 
@@ -116,13 +119,14 @@ def finish(ws, jid):
     job = next((r for r in ws.load("ai_match", {}).get("results", []) if r["id"] == jid and r.get("can_apply")), None)
     if not job:
         raise core.Invalid("That job isn't in your matches any more.", status=404)
-    if ws.uid in HANDOVER or (APPLYING.get(ws.uid) or {}).get("state") == "running":
+    if ws.uid in HANDOVER or operations.running(ws.uid, "ai_apply"):
         raise core.Invalid("A form is already open. Finish or close that window first.", status=409)
     if not resume_file(ws)[1]:
         raise core.Invalid("Upload your resume as a PDF first.", "resume")
+    op = operations.start(ws.uid, "ai_apply", public={"total": 1, "done": 0, "visible": True}, private={"current": job["title"]},
+                          busy="A form is already open. Finish or close that window first.")
     HANDOVER[ws.uid] = jid
-    APPLYING[ws.uid] = {"state": "running", "total": 1, "done": 0, "current": job["title"], "visible": True}
-    threading.Thread(target=run_watch, args=(ws.uid, [job]), daemon=True, name="ai-watch").start()
+    operations.spawn(op, run_watch, ws.uid, [job], name="ai-watch")
     return jsonify(ok=True)
 
 

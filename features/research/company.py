@@ -10,7 +10,6 @@ it. Only public business information; never private details or guessed email pat
 import hashlib
 import json
 import re
-import threading
 import time
 import unicodedata
 from urllib.parse import urljoin, urlsplit
@@ -20,6 +19,7 @@ from flask import Blueprint, jsonify
 import bridge
 from bridge import login_required
 from features.research.public_web import fetch_page, public_url
+from infra import locks, operations
 
 bp = Blueprint("company_research", __name__)
 FIELDS = ("website", "careers", "email", "phone", "ceo", "cto", "hiring_manager", "location", "industry", "about", "linkedin", "size")
@@ -27,7 +27,6 @@ LABELS = {"website": "Website", "careers": "Careers page", "email": "Hiring emai
           "hiring_manager": "Hiring contact", "location": "Location", "industry": "Industry", "about": "About", "linkedin": "LinkedIn",
           "size": "Size"}
 MAX_ATTEMPTS, BACKOFF = 3, 300
-RUNNING = {}  # (uid, cid) -> started
 
 
 def C():
@@ -212,7 +211,9 @@ def records(ws):
     return ws.load("company_research", {}) or {}
 
 
-def run(uid, cid):
+def run(op, uid, cid):
+    """Research one company. Cancelling before the research starts drops it; once it runs it finishes and is saved."""
+    op.checkpoint()
     core = C()
     ws = core.Workspace(uid)
     rec = records(ws).get(cid) or {}
@@ -232,8 +233,6 @@ def run(uid, cid):
             rows[cid] = {**rows.get(cid, rec), "status": "failed", "error": message, "updated": time.time()}
             ws.save("company_research", rows)
         print(f"[Inkwell] company research {rec.get('name')}: {e!r}", flush=True)
-    finally:
-        RUNNING.pop((uid, cid), None)
 
 
 def public(rows):
@@ -247,9 +246,12 @@ def public(rows):
 @login_required
 def list_companies(ws):
     rows = records(ws)
-    for (uid, cid) in list(RUNNING):
-        if uid == ws.uid and cid in rows:
-            rows[cid]["status"] = "researching"
+    running = set(operations.running_keys(ws.uid, "research"))
+    for cid, row in rows.items():
+        if cid in running:
+            row["status"] = "researching"
+        elif row.get("status") == "researching":  # its run ended without saving (stopped or the server restarted)
+            row["status"], row["error"] = "failed", row.get("error") or "Stopped before it finished. Retry this company."
     return jsonify(companies=public(rows), fields=[{"key": k, "label": LABELS[k]} for k in FIELDS])
 
 
@@ -267,7 +269,7 @@ def start(ws):
         raise core.Invalid("That website address isn't a public site.", "website")
     jobs = [{"title": str(j.get("title", ""))[:160], "url": str(j.get("url", ""))[:400]} for j in (p.get("jobs") or [])[:6] if isinstance(j, dict)]
     cid = company_id(name)
-    if (ws.uid, cid) in RUNNING:
+    if operations.running(ws.uid, "research", cid):
         return jsonify(id=cid, status="researching")
     with ws.lock:
         rows = records(ws)
@@ -281,8 +283,11 @@ def start(ws):
         rows[cid] = {**old, "name": name, "website": website or old.get("website", ""), "jobs": jobs or old.get("jobs", []),
                      "status": "researching", "attempts": old.get("attempts", 0) + 1, "updated": time.time()}
         ws.save("company_research", rows)
-    RUNNING[(ws.uid, cid)] = time.time()
-    threading.Thread(target=run, args=(ws.uid, cid), daemon=True, name=f"research-{cid[:6]}").start()
+    try:
+        op = operations.start(ws.uid, "research", cid, busy="This company is already being researched.")
+    except locks.LockTimeout:
+        return jsonify(id=cid, status="researching")
+    operations.spawn(op, run, ws.uid, cid, name=f"research-{cid[:6]}")
     return jsonify(id=cid, status="researching")
 
 

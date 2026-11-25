@@ -8,7 +8,6 @@ is the AI, it adds a short "why it matters" and today's focus, written only from
 
 import datetime as dt
 import re
-import threading
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
@@ -18,9 +17,10 @@ from bridge import login_required
 from features.ai_jobs.boards._util import get_json, get_text
 from features.learning import course
 from features.learning.common import C, bp
+from infra import locks, operations
+from infra.redact import error_text
 
 KEEP_DAYS = 14
-BUILDING = set()
 AI_WORDS = re.compile(r"\b(ai|llm|gpt|claude|gemini|model|agent|ml|machine learning|neural|rag|transformer|openai|anthropic|"
                       r"inference|diffusion|python|database|postgres|kubernetes|rust|react)\b", re.I)
 
@@ -135,23 +135,27 @@ def build(ws):
 
 
 def build_async(uid, notify_user=False):
-    if uid in BUILDING:
+    """Build today's briefing in the background, once at a time per account across processes."""
+    try:
+        op = operations.start(uid, "briefing", busy="The briefing is already being built.")
+    except locks.LockTimeout:
         return
-    BUILDING.add(uid)
 
-    def run():
+    def run(op):
         try:
+            op.checkpoint()
             ws = C().Workspace(uid)
             b = build(ws)
             if notify_user:
                 from features.notify import notify
                 notify(uid, "Your morning briefing is ready", f"Day {b['goal']['day']}: {b['goal']['title']} · "
                        f"{len(b['report']['followups'])} follow-ups · {len(b['report']['matches'])} strong matches", "/app/learning", "info")
+        except (operations.Cancelled, locks.LeaseLost):
+            raise
         except Exception as e:
-            print(f"[Inkwell] briefing: {e!r}", flush=True)
-        finally:
-            BUILDING.discard(uid)
-    threading.Thread(target=run, daemon=True, name=f"briefing-{uid[:6]}").start()
+            print(f"[Inkwell] briefing: {error_text(e, 200)}", flush=True)
+            raise
+    operations.spawn(op, run, name=f"briefing-{uid[:6]}")
 
 
 def daily_tick():
@@ -178,7 +182,7 @@ def get_briefing(ws):
     today = dt.date.today().isoformat()
     if today not in hist:
         build_async(ws.uid)
-    return jsonify(briefing=hist.get(today) or (hist[max(hist)] if hist else None), building=ws.uid in BUILDING,
+    return jsonify(briefing=hist.get(today) or (hist[max(hist)] if hist else None), building=operations.running(ws.uid, "briefing"),
                    dates=sorted(hist, reverse=True))
 
 

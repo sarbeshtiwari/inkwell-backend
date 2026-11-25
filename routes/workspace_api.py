@@ -3,7 +3,6 @@
 import io
 import re
 import smtplib
-import threading
 from mimetypes import guess_type
 
 from flask import jsonify, request, send_file
@@ -13,7 +12,7 @@ from core.config import ALLOWED_DOCS, MAX_FILE_MB, MAX_FILES, MAX_FILES_MB
 from core.http import app
 from core.mail import MAIL_PORTS, build_email, public_host, smtp_connect
 from core.security import body, login_required, rate_limited
-from core.sending import JOBS, Job
+from core.sending import job_view
 from core.validation import Invalid, v_email, v_int, v_phone, v_template_text, v_text
 from core.workspace import new_id, public_profile
 
@@ -21,14 +20,13 @@ from core.workspace import new_id, public_profile
 @app.get("/api/state")
 @login_required
 def state(ws):
-    job = JOBS.get(ws.uid) or Job()
     return jsonify({
         "recipients": ws.load("recipients", []),
         "templates": ws.load("templates", []),
         "profile": public_profile(ws.profile()),
         "documents": ws.documents(),
         "settings": ws.settings(),
-        "job": job.snapshot(),
+        "job": job_view(ws.uid),
     })
 
 
@@ -99,7 +97,7 @@ def save_profile(ws):
         ws.save("profile", profile)
     if first_password:  # mailbox just connected: read it once so every page has data
         from features import apps as feature_apps
-        threading.Thread(target=feature_apps.sync_all, args=(ws.uid, False, "first"), daemon=True).start()
+        feature_apps.start_sync(ws.uid, False, "first")
     return jsonify(public_profile(profile))
 
 

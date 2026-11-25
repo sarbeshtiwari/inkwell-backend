@@ -6,7 +6,7 @@ from flask import jsonify
 from bridge import login_required
 
 from features.apps.common import C, bp
-from features.apps.mailbox import PROGRESS, recompute
+from features.apps.mailbox import recompute, sync_running
 from features.apps.routes import public, run_in_background
 
 
@@ -59,7 +59,7 @@ def naukri_connect(ws):
                            "with on the Profile page, and turn on Naukri's job-alert and application emails.")
     ws.save("naukri", {"connected": True, "profile_url": url, "emails_found": found,
                        "checked_at": datetime.now().isoformat(timespec="seconds")})
-    if ws.uid not in PROGRESS:
+    if not sync_running(ws.uid):
         run_in_background(ws, not ws.load("apps_sync", {}).get("full_done"))
     return jsonify(ok=True, emails_found=found)
 

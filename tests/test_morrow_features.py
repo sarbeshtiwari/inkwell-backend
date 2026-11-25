@@ -145,11 +145,17 @@ def test_research_refuses_a_different_company():
     assert res["fields"] == {} and "review" in res["notes"]
 
 
+def run_inline(op, fn, *args, name=None):
+    """operations.spawn without the thread: the run still goes through its shared record and lease."""
+    with op:
+        fn(op, *args)
+
+
 def test_research_api_runs_in_background(user, monkeypatch):
     monkeypatch.setattr(research, "research_text", lambda ws, co: {"identity": {"matched": True, "source": "https://acme.example/about"},
                                                                    "fields": {"ceo": [{"value": "Jane Doe", "source": "https://acme.example/about"}]}})
     monkeypatch.setattr(research, "fetch_page", lambda u: PAGES[u])
-    monkeypatch.setattr(research.threading, "Thread", lambda target, args, **k: type("T", (), {"start": lambda self: target(*args)})())
+    monkeypatch.setattr(research.operations, "spawn", run_inline)
     c = user["client"]
     assert c.post("/api/research/companies", json={"name": "Acme Labs", "website": "http://10.0.0.1"}, headers=H).status_code == 400
     assert c.post("/api/research/companies", json={"name": "Acme Labs", "website": "acme.example"}, headers=H).status_code == 200

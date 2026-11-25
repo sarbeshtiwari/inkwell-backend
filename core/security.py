@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from flask import g, jsonify, request, session
 from pymongo import ReturnDocument
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from core.accounts import current_uid
 from core.config import (
@@ -37,6 +37,14 @@ def on_undecryptable(e):
     app.logger.error("Undecryptable data for %s %s", request.method, request.path)
     return jsonify(error="Some of your saved data couldn't be read (the encryption key may have changed). "
                          "Nothing was changed. Restore the original data/secret.key and try again."), 500
+
+
+@app.errorhandler(PyMongoError)
+def on_database_down(e):
+    app.logger.error("Database error on %s %s: %s", request.method, request.path, type(e).__name__)
+    if request.path.startswith("/api/"):
+        return jsonify(error="The database is unavailable right now. Nothing was changed. Try again in a moment."), 503
+    return "The database is unavailable right now. Try again in a moment.", 503
 
 
 @app.errorhandler(Exception)

@@ -21,11 +21,19 @@ from core.tables import phone_key, render
 from core.validation import EMAIL_RE, Invalid, v_int, v_template_text
 from core.whatsapp_store import browser_slot, open_whatsapp, wa_profile
 from core.workspace import DELETED, bridge_mod
+from infra import operations
+from infra.operations import Cancelled
+from infra.redact import error_text
 
 
 class Job:
-    def __init__(self):
-        self.stop = threading.Event()
+    """One campaign run. Progress is mirrored to its shared operation record (infra/operations.py), so every process
+    sees it; stopping is a cancellation request that the loop picks up between messages."""
+
+    PUSH_EVERY = 0.5  # seconds between progress writes (phase changes and the end are always written)
+
+    def __init__(self, op=None):
+        self.op = op
         self.lines = []
         self.done = self.total = 0
         self.running = False
@@ -37,10 +45,45 @@ class Job:
         self.finished = None
         self.dry_run = False
         self.channels = []
+        self.cancelled = False
+        self._pushed = 0.0
 
     def say(self, text):
         self.lines.append(f"{datetime.now():%H:%M:%S}  {text}")
         self.lines = self.lines[-500:]
+        self.push()
+
+    def set(self, force=True, **fields):
+        for k, v in fields.items():
+            setattr(self, k, v)
+        self.push(force)
+
+    def push(self, force=False):
+        if not self.op or (not force and time.monotonic() - self._pushed < self.PUSH_EVERY):
+            return
+        self._pushed = time.monotonic()
+        self.op.update(public={"done": self.done, "total": self.total, "sent": self.sent, "failed": self.failed,
+                               "skipped": self.skipped, "phase": self.phase, "next_at": self.next_at,
+                               "dry_run": self.dry_run, "channels": list(self.channels)},
+                       private={"lines": self.lines, "current": self.current})
+
+    def should_stop(self):
+        """Checkpoint between messages: True once a stop was requested (from any process)."""
+        if not self.cancelled and self.op:
+            try:
+                self.op.checkpoint()
+            except Cancelled:
+                self.cancelled = True
+        return self.cancelled
+
+    def pause(self, seconds):
+        """Wait between messages, ending early if a stop is requested."""
+        if self.op is None:
+            return time.sleep(seconds)
+        try:
+            self.op.wait(seconds)
+        except Cancelled:
+            self.cancelled = True
 
     def snapshot(self):
         return {"running": self.running, "done": self.done, "total": self.total, "lines": self.lines,
@@ -49,10 +92,40 @@ class Job:
                 "now": time.time(), "dry_run": self.dry_run, "channels": self.channels}
 
 
-JOBS = {}
+def job_view(uid):
+    """The user's latest campaign as /api/job has always returned it, read from the shared record."""
+    v = operations.current(uid, "send")
+    if not v:
+        return Job().snapshot()
+    running = v["state"] == operations.RUNNING
+    phase = v.get("phase") or "starting"
+    lines, current = list(v.get("lines") or []), v.get("current", "")
+    if running and v["cancel_requested"] and phase not in ("done", "stopped", "error"):
+        phase = "stopping"
+        lines.append(f"{datetime.now():%H:%M:%S}  Stopping after the current message…")
+    elif v["state"] == operations.INTERRUPTED:
+        phase, current = "error", v.get("error") or "Stopped unexpectedly."
+    elif v["state"] == operations.CANCELLED and phase not in ("stopped", "error"):
+        phase = "stopped"
+    return {"running": running, "done": v.get("done", 0), "total": v.get("total", 0), "lines": lines,
+            "sent": v.get("sent", 0), "failed": v.get("failed", 0), "skipped": v.get("skipped", 0), "current": current,
+            "phase": phase, "next_at": v.get("next_at") if running else None, "started": v["started"],
+            "finished": v["finished"], "now": time.time(), "dry_run": v.get("dry_run", False),
+            "channels": v.get("channels") or []}
 
 
-JOBS_LOCK = threading.Lock()
+def send_running(uid):
+    return operations.running(uid, "send")
+
+
+def start_job(ws, cfg):
+    """Start a campaign in the background, or raise 409 if one is running for this account (in any process)."""
+    op = operations.start(ws.uid, "send", busy="A send is already running.")
+    job = Job(op)
+    job.running = True
+    job.push(force=True)
+    threading.Thread(target=run_job, args=(ws, job, cfg), daemon=True, name=f"send-{ws.uid[:6]}").start()
+    return job
 
 
 class Cleanup:
@@ -79,16 +152,26 @@ class Cleanup:
 
 
 def run_job(ws, job, cfg):
+    state = operations.DONE
     try:
         _run_job(ws, job, cfg)
-        job.phase = "stopped" if job.stop.is_set() else "done"
+        job.phase = "stopped" if job.cancelled else "done"
+        state = operations.CANCELLED if job.cancelled else operations.DONE
     except Exception as e:
-        job.say(f"Error: {e}")
-        job.phase, job.current = "error", str(e)
+        msg = e.message if isinstance(e, Invalid) else error_text(e, 300)
+        job.lines.append(f"{datetime.now():%H:%M:%S}  Error: {msg}")
+        job.phase, job.current, state = "error", msg, operations.FAILED
     finally:
         job.next_at, job.finished = None, time.time()
         job.running = False
-        job.say("Finished.")
+        job.lines.append(f"{datetime.now():%H:%M:%S}  Finished.")
+        if job.op:
+            try:
+                job.push(force=True)
+                job.op.finish(state, error=job.current if state == operations.FAILED else "")
+            except Exception as e:  # lost the lease or the database: the record shows "interrupted" instead
+                print(f"[Inkwell] campaign result not recorded: {error_text(e, 200)}", flush=True)
+                job.op.lease.release()
         if getattr(bridge_mod(), "notify", None) and not cfg.get("dry_run"):
             title = {"done": "Campaign finished", "stopped": "Campaign stopped", "error": "Campaign stopped with an error"}.get(job.phase, "Campaign finished")
             bridge_mod().notify(ws.uid, title, f"{job.done} of {job.total} sent." + (f" {job.current}" if job.phase == "error" else ""),
@@ -201,7 +284,7 @@ def _run_job(ws, job, cfg):
             job.say(f"Connected to email as {profile['email']}.")
 
         for i, (r, chans) in enumerate(todo, 1):
-            if job.stop.is_set():
+            if job.should_stop():
                 job.say("Stopped.")
                 break
             if DELETED.get(ws.uid):
@@ -212,9 +295,11 @@ def _run_job(ws, job, cfg):
                 job.say(f"Reached today's limit of {DAILY_LIMIT} messages. The rest can go tomorrow.")
                 break
             who = r.get("name") or r.get("company") or r.get("phone") or r.get("email")
-            job.phase, job.current, job.next_at = "sending", who, None
+            job.set(phase="sending", current=who, next_at=None)
             text = render(cfg["body"], r, profile)
             for ch in chans:
+                if job.op:
+                    job.op.lease.ensure()  # a run that lost its lease stops before sending, never after
                 if ch == "whatsapp":
                     phone = phone_key(r, cc)
                     to = "+" + phone
@@ -261,11 +346,11 @@ def _run_job(ws, job, cfg):
             job.done = i
             if i == len(todo) and any("email" in c for _, c in todo):
                 BOUNCE_CHECK_SOON[ws.uid] = time.time() + 120  # look for bounce notices shortly after the run
-            if i < len(todo) and not job.stop.is_set():
+            if i < len(todo) and not job.should_stop():
                 wait = random.randint(min_delay, max_delay)
-                job.say(f"Waiting {wait}s…")
-                job.phase, job.current, job.next_at = "waiting", "", time.time() + wait
-                job.stop.wait(wait)
+                job.lines.append(f"{datetime.now():%H:%M:%S}  Waiting {wait}s…")
+                job.set(phase="waiting", current="", next_at=time.time() + wait)  # phase changes are always written
+                job.pause(wait)
 
 
 def validate_send(ws, p):

@@ -18,6 +18,7 @@ from flask import Blueprint, jsonify
 
 import bridge
 from bridge import login_required
+from infra import operations
 
 bp = Blueprint("nearby", __name__)
 
@@ -33,7 +34,6 @@ TYPES = {"it": "IT & software", "company": "Company", "consulting": "Consulting"
          "commercial": "Office building"}
 MAX_RADIUS_KM = 5
 CHECK_PER_RUN = 40
-CHECKS = {}                       # uid -> {"state", "total", "done", "current"}
 _NOMINATIM_LOCK = threading.Lock()
 _last_nominatim = [0.0]
 
@@ -336,17 +336,18 @@ def _same_company(name, jobs):
     return any(key and key in re.sub(r"[^a-z0-9]", "", (j.get("company") or "").lower()) for j in jobs[:5]) or not key
 
 
-def run_checks(uid, ids):
+def run_checks(op, uid, ids):
+    """Check companies 4 at a time. Cancelling skips the companies not started yet; finished checks are kept."""
     ws = C().Workspace(uid)
-    st = CHECKS[uid]
+    stop = operations.CancelEvent(op)
     rows = {r["id"]: r for r in (ws.load("nearby", {}) or {}).get("companies", [])}
     area = (ws.load("nearby", {}) or {}).get("area") or {}
     try:
         def one(cid):
             row = rows.get(cid)
-            if not row:
+            if not row or stop.is_set():
                 return cid, None
-            st["current"] = row["name"]
+            op.update(private={"current": row["name"]})
             try:
                 return cid, check_company(row, area)
             except Exception as e:
@@ -362,9 +363,10 @@ def run_checks(uid, ids):
                         if len(cache) > 1500:
                             cache = dict(sorted(cache.items(), key=lambda kv: -kv[1].get("checked", 0))[:1500])
                         ws.save("nearby_info", cache)
-                st["done"] += 1
+                op.update(inc={"done": 1})
     finally:
-        st["state"], st["current"] = "done", ""
+        if stop.is_set():
+            op.checkpoint()  # raises Cancelled: recorded as cancelled
 
 
 def fresh(info, area):
@@ -390,7 +392,7 @@ def public(ws):
     elsewhere = [{"company": names.get(k) or k, "jobs": v[:5]} for k, v in hiring.items() if k and k not in on_map]
     return {"area": d.get("area"), "radius_km": d.get("radius_km", 1), "companies": companies, "searched": d.get("at"),
             "hiring_in_city": sorted(elsewhere, key=lambda x: -len(x["jobs"]))[:30],
-            "checking": CHECKS.get(ws.uid, {}), "types": sorted({c["type"] for c in companies}), "google": bool(google_key(ws)),
+            "checking": operations.batch_view(ws.uid, "nearby"), "types": sorted({c["type"] for c in companies}), "google": bool(google_key(ws)),
             "sources": {"osm": sum(c.get("source", "osm") == "osm" for c in companies), "google": sum(c.get("source") == "google" for c in companies)}}
 
 
@@ -456,14 +458,15 @@ def check(ws):
     ids = [i for i in ids if i in known]
     if not ids:
         raise core.Invalid("Pick at least one company to check.")
-    if (CHECKS.get(ws.uid) or {}).get("state") == "running":
+    if operations.running(ws.uid, "nearby"):
         raise core.Invalid("Already checking. Wait for it to finish.", status=409)
     for _ in ids:
         if core.rate_limited(("nearby-check", ws.uid), 300, 86400):
             raise core.Invalid("You've checked a lot of companies today. Try again tomorrow.", status=429)
-    CHECKS[ws.uid] = {"state": "running", "total": len(ids), "done": 0, "current": ""}
-    threading.Thread(target=run_checks, args=(ws.uid, ids), daemon=True, name="nearby-check").start()
-    return jsonify(checking=CHECKS[ws.uid])
+    op = operations.start(ws.uid, "nearby", public={"total": len(ids), "done": 0}, private={"current": ""},
+                          busy="Already checking. Wait for it to finish.")
+    operations.spawn(op, run_checks, ws.uid, ids, name="nearby-check")
+    return jsonify(checking=operations.batch_view(ws.uid, "nearby"))
 
 
 @bp.post("/api/nearby/track/<cid>")

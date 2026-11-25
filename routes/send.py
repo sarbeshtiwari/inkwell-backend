@@ -1,15 +1,15 @@
 """Campaign API: preview, start/stop sends, job status, history, bounce checks."""
 
-import threading
 
 from flask import jsonify
 
 from core.bounces import check_bounces
 from core.http import app
 from core.security import body, login_required, rate_limited
-from core.sending import JOBS, JOBS_LOCK, Job, run_job, validate_send
+from core.sending import job_view, start_job, validate_send
 from core.tables import render
 from core.validation import Invalid
+from infra import operations
 
 
 @app.post("/api/preview")
@@ -28,13 +28,8 @@ def preview(ws):
 @login_required
 def start_send(ws):
     cfg = validate_send(ws, body())
-    with JOBS_LOCK:  # check-and-start in one step, so two quick clicks can't start two campaigns
-        if JOBS.get(ws.uid) and JOBS[ws.uid].running:
-            raise Invalid("A send is already running.", status=409)
-        job = JOBS[ws.uid] = Job()
-        job.running = True
     ws.update_settings(**{k: cfg[k] for k in ("mode", "template_id", "documents", "min_delay", "max_delay", "limit")})
-    threading.Thread(target=run_job, args=(ws, job, cfg), daemon=True).start()
+    start_job(ws, cfg)  # one campaign per account, across every process (shared lease); 409 if one is running
     return jsonify(ok=True)
 
 
@@ -49,17 +44,13 @@ def bounces_check(ws):
 @app.get("/api/job")
 @login_required
 def job_status(ws):
-    return jsonify((JOBS.get(ws.uid) or Job()).snapshot())
+    return jsonify(job_view(ws.uid))
 
 
 @app.post("/api/job/stop")
 @login_required
 def stop_job(ws):
-    job = JOBS.get(ws.uid)
-    if job and job.running:
-        job.stop.set()
-        job.phase = "stopping"
-        job.say("Stopping after the current message…")
+    operations.cancel(ws.uid, "send")  # seen by the campaign between messages, in whichever process runs it
     return jsonify(ok=True)
 
 

@@ -9,6 +9,7 @@ from conftest import H, patch_shared
 
 from features import ai_jobs as AI
 from features.ai_jobs import evaluate as EV, signals, tracker
+from infra import operations
 
 REAL_LIVENESS = signals.liveness
 
@@ -114,7 +115,7 @@ def test_rules_api_and_apply_gate(user, monkeypatch):
     patch_shared(monkeypatch, "apply_one", src=AI, value=lambda ws, job, submit=True, visible=False: {"state": "applied", "url": job["url"]})
     assert c.post("/api/ai-jobs/apply", json={"ids": [JOB["id"]], "anyway": True}, headers=H).status_code == 200
     for _ in range(100):
-        if AI.APPLYING[ws.uid]["state"] != "running":
+        if not operations.running(ws.uid, "ai_apply"):
             break
         time.sleep(0.05)
     assert ws.load("ai_pipeline", {})[JOB["id"]]["status"] == "applied"
@@ -130,7 +131,7 @@ def test_closed_postings_are_never_applied_to(user, monkeypatch):
     ws.save("profile", {**ws.profile(), "phone": "+919999999999"})
     assert c.post("/api/ai-jobs/apply", json={"ids": [JOB["id"]]}, headers=H).status_code == 200
     for _ in range(100):
-        if AI.APPLYING[ws.uid]["state"] != "running":
+        if not operations.running(ws.uid, "ai_apply"):
             break
         time.sleep(0.05)
     assert not called and ws.load("ai_applied", {})[JOB["id"]]["state"] == "closed"

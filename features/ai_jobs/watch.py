@@ -6,7 +6,7 @@ import tempfile
 import time
 
 from features.ai_jobs.apply import BLOCKED, BLOCKED_RESULT, CODE_STEP, CONFIRMED, closed_result, apply_url, apply_values, is_blocked_board, mark_blocked, open_form, record_application, resume_file, write_cover
-from features.ai_jobs.common import APPLYING, APPLY_LOCK, C, HANDOVER, Live
+from features.ai_jobs.common import APPLY_LOCK, C, HANDOVER, Live
 from features.ai_jobs import siteapply
 from features.ai_jobs.forms import challenge_visible, fill_form, learn_from_page, questions_left
 
@@ -245,11 +245,10 @@ def watch_apply(w, ws, job, values, path):
             pass
 
 
-def run_watch(uid, picks):
+def run_watch(op, uid, picks):
     """Visible mode on the user's computer: one browser window, a tab per job, pausing for the user when needed."""
     from playwright.sync_api import sync_playwright
     ws = C().Workspace(uid)
-    st = APPLYING[uid]
     values = apply_values(ws)
     resume, data = resume_file(ws)
     try:
@@ -275,7 +274,8 @@ def run_watch(uid, picks):
             w = Watch(pw, uid)
             try:
                 for job in picks:
-                    st["current"] = job["title"]
+                    op.checkpoint()  # before the next form: stops here when cancelled
+                    op.update(private={"current": job["title"]})
                     try:
                         res = closed_result(job) or watch_apply(w, ws, job, values, paths.get(job["id"], path))
                     except Exception as e:
@@ -296,14 +296,13 @@ def run_watch(uid, picks):
                         from features.ai_jobs.tracker import set_status
                         set_status(ws, job["id"], "applied" if res["state"] == "applied" else "discarded",
                                    note="" if res["state"] == "applied" else "Posting closed")
-                    st["done"] += 1
+                    op.update(inc={"done": 1})
             finally:
                 try:
                     w.ctx.close()
                 except Exception:
                     pass
     finally:
-        st["state"] = "done"
         HANDOVER.pop(uid, None)
         from features.notify import notify
         ok = sum(1 for j in picks if (ws.load("ai_applied", {}).get(j["id"]) or {}).get("state") == "applied")

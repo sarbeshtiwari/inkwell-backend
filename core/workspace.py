@@ -1,12 +1,12 @@
 """Per-user workspace: each account's encrypted key-value data, documents and history."""
 
 import sys
-import threading
 import time
 import uuid
 from datetime import date, datetime
 
 from pymongo import ASCENDING, DESCENDING
+from pymongo.errors import DuplicateKeyError
 
 from core.config import DEFAULT_SETTINGS, STARTER_TEMPLATE
 from core.crypto import lookup_hash, seal, unseal
@@ -14,8 +14,7 @@ from core.db import M
 from core.storage import drop_file, get_file, put_file
 from core.tables import phone_key
 from core.validation import Invalid
-
-LOCKS = {}
+from infra import locks
 
 
 def now_iso():
@@ -36,7 +35,7 @@ DELETED = {}  # uid -> time: accounts deleted in this process (background writer
 class Workspace:
     def __init__(self, uid):
         self.uid = uid
-        self.lock = LOCKS.setdefault(uid, threading.RLock())
+        self.lock = locks.user_lock(uid)  # shared by every process (MongoDB lease), re-entrant within this one
 
     def load(self, key, default):
         row = M.kv.find_one({"_id": f"{self.uid}:{key}"})
@@ -49,7 +48,16 @@ class Workspace:
                           "columns or history) and try again.", status=413)
         if DELETED.get(self.uid) or not M.users.find_one({"_id": self.uid}, {"_id": 1}):
             return  # the account was deleted while a background job was still running: don't recreate its data
-        M.kv.replace_one({"_id": f"{self.uid}:{key}"}, {"uid": self.uid, "key": key, "data": blob}, upsert=True)
+        held = locks.current(self.uid)
+        if not held:  # $set (not replace) keeps the fence numbers stored on the document
+            M.kv.update_one({"_id": f"{self.uid}:{key}"}, {"$set": {"uid": self.uid, "key": key, "data": blob}}, upsert=True)
+            return
+        # Written under this account's lock: fenced, so a holder whose lease ran out can't overwrite newer data.
+        query, values = locks.fenced(held, {"_id": f"{self.uid}:{key}"}, {"uid": self.uid, "key": key, "data": blob})
+        try:
+            M.kv.update_one(query, {"$set": values}, upsert=True)
+        except DuplicateKeyError:  # the document carries a newer fence: someone else holds the lock now
+            raise locks.LeaseLost() from None
 
     def settings(self):
         return {**DEFAULT_SETTINGS, **self.load("settings", {})}

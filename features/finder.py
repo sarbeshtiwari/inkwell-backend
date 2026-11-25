@@ -13,7 +13,6 @@ import html
 import ipaddress
 import re
 import socket
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -24,6 +23,8 @@ from flask import Blueprint, jsonify, request
 
 import bridge
 from bridge import login_required
+from infra import locks, operations
+from infra.redact import error_text
 
 bp = Blueprint("finder", __name__)
 
@@ -45,8 +46,6 @@ CF_EMAIL = re.compile(r'data-cfemail="([0-9a-f]{6,})"', re.I)
 HREF = re.compile(r"""href\s*=\s*["']([^"'<>\s]+)["']""", re.I)
 NOT_ADDRESSES = re.compile(r"\.(png|jpe?g|gif|webp|svg|css|js)$|@\dx\.|example\.(com|org)$|sentry|wixpress|domain\.com$", re.I)
 
-RUNS = {}                 # uid -> Run (this process only; results are also saved to the workspace)
-RUNS_LOCK = threading.Lock()
 
 
 def C():
@@ -208,9 +207,12 @@ def scan_site(site, stop, pages_cap=MAX_PAGES):
 # ---------------------------------------------------------------- runs
 
 class Run:
-    def __init__(self, uid, items):
-        self.uid, self.items = uid, items
-        self.stop = threading.Event()
+    """One finder run. Progress and results so far live in its shared operation record (results encrypted);
+    stopping is a cancellation request, seen by the scanners between pages."""
+
+    def __init__(self, op, uid, items):
+        self.op, self.uid, self.items = op, uid, items
+        self.stop = operations.CancelEvent(op)
         self.results = []
         self.done = 0
         self.state = "running"
@@ -221,7 +223,7 @@ class Run:
                 "results": self.results}
 
 
-def run_scan(run):
+def run_scan(op, run):
     ws = C().Workspace(run.uid)
 
     def one(item):
@@ -239,12 +241,17 @@ def run_scan(run):
                 res.pop("url", None)
                 run.results.append(res)
                 run.done += 1
+                op.update(public={"done": run.done}, private={"results": run.results})
         run.state = "stopped" if run.stop.is_set() else "done"
+    except (operations.Cancelled, locks.LeaseLost):
+        raise
     except Exception as e:
-        print(f"[Inkwell] finder run failed: {e}", flush=True)
+        print(f"[Inkwell] finder run failed: {error_text(e, 200)}", flush=True)
         run.state = "error"
     with ws.lock:
         ws.save("finder", run.snapshot())
+    if run.state == "stopped":
+        op.finish(operations.CANCELLED)
     found = sum(len(r["emails"]) for r in run.results)
     from features.notify import notify
     notify(run.uid, f"Website finder: {found} hiring address{'es' if found != 1 else ''} found",
@@ -331,23 +338,34 @@ def read_items(core):
 def start_scan(ws):
     core = C()
     items, bad = read_items(core)
-    with RUNS_LOCK:
-        cur = RUNS.get(ws.uid)
-        if cur and cur.state == "running":
-            raise core.Invalid("A search is already running. Wait for it to finish or stop it.", status=409)
-        for _ in items:
-            if core.rate_limited(("finder", ws.uid), SITES_PER_DAY, 86400):
-                raise core.Invalid(f"You can check up to {SITES_PER_DAY} websites a day. Try again tomorrow.", status=429)
-        run = RUNS[ws.uid] = Run(ws.uid, items)
-    threading.Thread(target=run_scan, args=(run,), daemon=True, name="finder").start()
+    busy = "A search is already running. Wait for it to finish or stop it."
+    if operations.running(ws.uid, "finder"):
+        raise core.Invalid(busy, status=409)
+    for _ in items:
+        if core.rate_limited(("finder", ws.uid), SITES_PER_DAY, 86400):
+            raise core.Invalid(f"You can check up to {SITES_PER_DAY} websites a day. Try again tomorrow.", status=429)
+    op = operations.start(ws.uid, "finder", public={"total": len(items), "done": 0}, private={"results": []}, busy=busy)
+    operations.spawn(op, run_scan, Run(op, ws.uid, items), name="finder")
     return jsonify(ok=True, total=len(items), skipped=bad)
+
+
+def finder_state(ws):
+    """The running search (shared record, so any process can answer) or the last saved one."""
+    v = operations.current(ws.uid, "finder")
+    saved = ws.load("finder", None)
+    if v and v["state"] == operations.RUNNING:
+        return {"state": "running", "total": v.get("total", 0), "done": v.get("done", 0), "started": v["started"],
+                "results": v.get("results", [])}
+    if v and v["state"] == operations.INTERRUPTED and (saved or {}).get("started", 0) < (v["started"] or 0):
+        return {"state": "error", "total": v.get("total", 0), "done": v.get("done", 0), "started": v["started"],
+                "results": v.get("results", [])}
+    return saved or {"state": "idle", "total": 0, "done": 0, "results": []}
 
 
 @bp.get("/api/finder")
 @login_required
 def status(ws):
-    run = RUNS.get(ws.uid)
-    snap = run.snapshot() if run else (ws.load("finder", None) or {"state": "idle", "total": 0, "done": 0, "results": []})
+    snap = finder_state(ws)
     emails = {r.get("email", "").lower() for r in ws.load("recipients", [])}
     for site in snap.get("results", []):
         for e in site.get("emails", []):
@@ -358,9 +376,7 @@ def status(ws):
 @bp.post("/api/finder/stop")
 @login_required
 def stop(ws):
-    run = RUNS.get(ws.uid)
-    if run and run.state == "running":
-        run.stop.set()
+    operations.cancel(ws.uid, "finder")
     return jsonify(ok=True)
 
 

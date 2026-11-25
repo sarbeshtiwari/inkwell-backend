@@ -31,9 +31,6 @@ MAX_RESULTS = 40
 UA = {"User-Agent": "InkwellJobMatch/1.0 (+https://reachout-web.netlify.app)"}
 
 
-RUNS, APPLYING = {}, {}
-
-
 LIVE = {}                          # uid -> {"frame": jpeg bytes, "log": [...], "job": title, "at": t}
 
 

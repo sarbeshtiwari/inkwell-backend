@@ -30,12 +30,12 @@ from .extract import (  # noqa: F401
     naukri_events, snippet,
 )
 from .mailbox import (  # noqa: F401
-    ATS_FROM, HISTORY_MAX, PROGRESS, SEARCH_TERMS, SYNC_LOCK, announce,
+    ATS_FROM, HISTORY_MAX, SEARCH_TERMS, announce, progress_of, sync_running,
     app_id, fetch_batch, gmail_query, ingest, match, merge_scanned,
     recompute, scan, search_ids,
 )
 from .sync import (  # noqa: F401
-    DEFAULT_SYNC, MAIL_SYNC, daily_tick, morning_sync, next_run, start_workers,
+    DEFAULT_SYNC, daily_tick, mail_sync_progress, morning_sync, next_run, start_sync, start_workers,
     sync_all, sync_prefs,
 )
 from .routes import (  # noqa: F401
