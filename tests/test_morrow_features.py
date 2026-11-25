@@ -229,3 +229,22 @@ def test_template_escapes_and_blocks_unsafe_tex():
         raise AssertionError("should refuse")
     except latex.LatexError as e:
         assert "input" in str(e)
+
+
+# --- website builder: the notebook look ----------------------------------------------------------------------------------
+
+def test_notebook_look_renders_and_old_sites_stay_modern():
+    import app as A
+    from features import site
+    ctx = A.app.test_request_context("/")
+    ctx.push()
+    nb = {k: v for k, v in site.PRESETS["notebook"].items() if k != "label"}
+    cfg = {"theme": {**nb, "preset": "notebook"}, "profile": {"name": "A <b>", "socials": {}}, "seo": {},
+           "sections": [{"id": "h1", "type": "hero", "on": True, "variant": "center", "nav": "",
+                         "data": {"title": "hi, I build *LLM agents* <script>"}}]}
+    html = site.render(site.clean(cfg), [], slug="a", nonce="n")
+    assert "<em>LLM agents</em>" in html and "&lt;script&gt;" in html and "<script>\"" not in html
+    assert 'class="anim nb"' in html and "family=Caveat" in html and "prefers-color-scheme: dark" in html
+    old = site.clean({**cfg, "theme": {k: v for k, v in site.PRESETS["midnight"].items() if k not in ("label", "look")}})
+    assert old["theme"]["look"] == "modern" and "family=Caveat" not in site.render(old, [], slug="a", nonce="n")
+    ctx.pop()

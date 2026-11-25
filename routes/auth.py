@@ -1,4 +1,4 @@
-"""Sign-in routes: email codes, logout, account info and deletion."""
+"""Sign-in routes: email and password (the default while email isn't set up), email codes, logout, account info and deletion."""
 
 import hmac
 import re
@@ -15,6 +15,9 @@ from core.accounts import (
     find_user,
     is_admin,
     new_user,
+    password_of,
+    password_ok,
+    set_password,
     start_session,
 )
 from core.config import (
@@ -163,6 +166,86 @@ def verify_code():
     return jsonify(ok=True)
 
 
+PW_MIN, PW_MAX = 8, 128
+
+
+def v_password(p, email="", field="password"):
+    pw = p if isinstance(p, str) else ""
+    if len(pw) < PW_MIN:
+        raise Invalid(f"Use at least {PW_MIN} characters.", field)
+    if len(pw) > PW_MAX:
+        raise Invalid(f"Use at most {PW_MAX} characters.", field)
+    if pw.strip().lower() in (email.lower(), email.split("@")[0].lower()) or len(set(pw)) < 4:
+        raise Invalid("That password is too easy to guess. Try a short phrase.", field)
+    return pw
+
+
+def password_throttle(email):
+    """Per network and per account: a few guesses, then a wait. Failed tries for one email are capped per day."""
+    if rate_limited(("pw-ip", client_ip()), 30, 900):
+        raise Invalid("Too many attempts from this network. Wait a few minutes and try again.", status=429)
+    if rate_limited(("pw-acct", lookup_hash(email)), 10, 900, peek=True):
+        raise Invalid("Too many wrong passwords for this account. Wait 15 minutes and try again.", status=429)
+
+
+@app.post("/api/auth/signup")
+def signup_password():
+    p = body()
+    email = v_email(p.get("email"))
+    name = v_text(p.get("name"), "name", "Full name", 80, required=True, min_len=2)
+    pw = v_password(p.get("password"), email)
+    if not p.get("agree"):
+        raise Invalid("Please tick the box to accept the terms.", "agree")
+    if rate_limited(("signup-ip", client_ip()), 10, 3600):
+        raise Invalid("Too many sign-ups from this network. Try again later.", status=429)
+    if not ALLOW_SIGNUP:
+        raise Invalid("New sign-ups are closed right now.", "email", 403)
+    if find_user(email):
+        # Without email we can't keep this private: say it plainly and point to log in.
+        raise Invalid("There's already an account for this email. Log in instead.", "email", 409)
+    uid = new_user(email, name, terms=TERMS_VERSION)
+    seed_workspace(Workspace(uid), name, email)
+    set_password(uid, pw)
+    M.users.update_one({"_id": uid}, {"$set": {"last_login": time.time()}})
+    start_session(uid)
+    return jsonify(ok=True)
+
+
+@app.post("/api/auth/login")
+def login_password():
+    p = body()
+    email = v_email(p.get("email"))
+    pw = p.get("password") if isinstance(p.get("password"), str) else ""
+    password_throttle(email)
+    user = find_user(email)
+    stored = password_of(user["id"]) if user else None
+    if not password_ok(stored, pw[:PW_MAX]):
+        rate_limited(("pw-acct", lookup_hash(email)), 10, 900)
+        if user and not stored:
+            raise Invalid("This account doesn't have a password yet. Sign in once with an email code, or ask the "
+                          "site's owner to set one, then add a password in Settings.", "password")
+        raise Invalid("Wrong email or password.", "password")
+    M.users.update_one({"_id": user["id"]}, {"$set": {"last_login": time.time()}})
+    start_session(user["id"])
+    return jsonify(ok=True)
+
+
+@app.post("/api/account/password")
+@login_required
+def change_password(ws):
+    """Set a password (first time) or change it (needs the current one)."""
+    p = body()
+    u = find_user(uid=ws.uid)
+    stored = password_of(ws.uid)
+    if stored:
+        password_throttle(u["email"])
+        if not password_ok(stored, p.get("current") if isinstance(p.get("current"), str) else ""):
+            rate_limited(("pw-acct", lookup_hash(u["email"])), 10, 900)
+            raise Invalid("Your current password isn't right.", "current")
+    set_password(ws.uid, v_password(p.get("password"), u["email"]))
+    return jsonify(ok=True)
+
+
 @app.post("/api/auth/logout")
 def logout():
     end_session()
@@ -182,7 +265,7 @@ def logout_everywhere(ws):
 @login_required
 def me(ws):
     u = find_user(uid=ws.uid)
-    return jsonify(name=u["name"], email=u["email"], is_admin=is_admin(ws.uid), stages=STAGES,
+    return jsonify(name=u["name"], email=u["email"], is_admin=is_admin(ws.uid), has_password=bool(password_of(ws.uid)), stages=STAGES,
                    can_track_opens=can_track_opens(), daily_limit=DAILY_LIMIT, sent_today=ws.sent_today(),
                    min_wa_delay=MIN_WA_DELAY, max_files_mb=MAX_FILES_MB, max_file_mb=MAX_FILE_MB,
                    allowed_docs=sorted(ALLOWED_DOCS), whatsapp=WHATSAPP_ENABLED)
@@ -198,7 +281,16 @@ def delete_account_request(ws):
 @app.post("/api/account/delete")
 @login_required
 def delete_account(ws):
-    check_otp(find_user(uid=ws.uid)["email"], body().get("code"), ("delete",))
+    p = body()
+    u = find_user(uid=ws.uid)
+    stored = password_of(ws.uid)
+    if stored and "password" in p:  # confirm with the password while email codes aren't available
+        password_throttle(u["email"])
+        if not password_ok(stored, p.get("password") if isinstance(p.get("password"), str) else ""):
+            rate_limited(("pw-acct", lookup_hash(u["email"])), 10, 900)
+            raise Invalid("That password isn't right.", "password")
+    else:
+        check_otp(u["email"], p.get("code"), ("delete",))
     if ws.uid in JOBS:
         JOBS[ws.uid].stop.set()
     if ws.uid in WA_LINKS:

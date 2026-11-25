@@ -20,6 +20,8 @@ from urllib.parse import quote
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 
+from features import site_notebook
+
 from flask import Blueprint, Response, jsonify, redirect, request
 
 import bridge
@@ -42,17 +44,20 @@ FONTS = {
     "IBM Plex Sans": "IBM+Plex+Sans:wght@400;500;600;700", "Lora": "Lora:wght@400;500;600;700",
     "Playfair Display": "Playfair+Display:wght@500;600;700;800", "Fraunces": "Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700",
     "DM Serif Display": "DM+Serif+Display", "JetBrains Mono": "JetBrains+Mono:wght@400;500;700",
+    "IBM Plex Serif": "IBM+Plex+Serif:ital,wght@0,400;0,600;0,700;1,400;1,600", "Karla": "Karla:wght@400;500;600;700",
+    "Caveat": "Caveat:wght@400;600;700",
 }
 
 PRESETS = {
-    "midnight": {"label": "Midnight", "bg": "#0b0d18", "surface": "#141830", "text": "#eceefa", "muted": "#a3a9c2", "accent": "#6366f1", "accent2": "#a855f7", "font_head": "Space Grotesk", "font_body": "Inter", "background": "glow", "card": "border"},
-    "paper": {"label": "Paper", "bg": "#faf7f2", "surface": "#ffffff", "text": "#1c1917", "muted": "#6b645c", "accent": "#c2410c", "accent2": "#ea580c", "font_head": "Fraunces", "font_body": "Inter", "background": "plain", "card": "raised"},
-    "ocean": {"label": "Ocean", "bg": "#f2f7fb", "surface": "#ffffff", "text": "#0f2233", "muted": "#5a6b7b", "accent": "#0284c7", "accent2": "#06b6d4", "font_head": "Sora", "font_body": "DM Sans", "background": "dots", "card": "raised"},
-    "forest": {"label": "Forest", "bg": "#0e1812", "surface": "#15241b", "text": "#e6f0e9", "muted": "#9db3a5", "accent": "#22c55e", "accent2": "#a3e635", "font_head": "Outfit", "font_body": "Manrope", "background": "grid", "card": "border"},
-    "sunset": {"label": "Sunset", "bg": "#1a0f14", "surface": "#27161e", "text": "#fbeff2", "muted": "#c9a7b2", "accent": "#f43f5e", "accent2": "#f59e0b", "font_head": "Poppins", "font_body": "Poppins", "background": "glow", "card": "glass"},
-    "mono": {"label": "Mono", "bg": "#ffffff", "surface": "#f5f5f4", "text": "#0a0a0a", "muted": "#616161", "accent": "#0a0a0a", "accent2": "#525252", "font_head": "JetBrains Mono", "font_body": "IBM Plex Sans", "background": "plain", "card": "flat"},
-    "lavender": {"label": "Lavender", "bg": "#f7f5ff", "surface": "#ffffff", "text": "#1e1b3a", "muted": "#6b6890", "accent": "#7c3aed", "accent2": "#db2777", "font_head": "Plus Jakarta Sans", "font_body": "Plus Jakarta Sans", "background": "glow", "card": "raised"},
-    "editorial": {"label": "Editorial", "bg": "#111111", "surface": "#1a1a1a", "text": "#f5f1e8", "muted": "#a39e93", "accent": "#e8c07d", "accent2": "#e8c07d", "font_head": "DM Serif Display", "font_body": "Lora", "background": "plain", "card": "flat"},
+    "notebook": site_notebook.PRESET,
+    "midnight": {"label": "Midnight", "bg": "#0b0d18", "surface": "#141830", "text": "#eceefa", "muted": "#a3a9c2", "accent": "#6366f1", "accent2": "#a855f7", "font_head": "Space Grotesk", "font_body": "Inter", "background": "glow", "card": "border", "look": "modern"},
+    "paper": {"label": "Paper", "bg": "#faf7f2", "surface": "#ffffff", "text": "#1c1917", "muted": "#6b645c", "accent": "#c2410c", "accent2": "#ea580c", "font_head": "Fraunces", "font_body": "Inter", "background": "plain", "card": "raised", "look": "modern"},
+    "ocean": {"label": "Ocean", "bg": "#f2f7fb", "surface": "#ffffff", "text": "#0f2233", "muted": "#5a6b7b", "accent": "#0284c7", "accent2": "#06b6d4", "font_head": "Sora", "font_body": "DM Sans", "background": "dots", "card": "raised", "look": "modern"},
+    "forest": {"label": "Forest", "bg": "#0e1812", "surface": "#15241b", "text": "#e6f0e9", "muted": "#9db3a5", "accent": "#22c55e", "accent2": "#a3e635", "font_head": "Outfit", "font_body": "Manrope", "background": "grid", "card": "border", "look": "modern"},
+    "sunset": {"label": "Sunset", "bg": "#1a0f14", "surface": "#27161e", "text": "#fbeff2", "muted": "#c9a7b2", "accent": "#f43f5e", "accent2": "#f59e0b", "font_head": "Poppins", "font_body": "Poppins", "background": "glow", "card": "glass", "look": "modern"},
+    "mono": {"label": "Mono", "bg": "#ffffff", "surface": "#f5f5f4", "text": "#0a0a0a", "muted": "#616161", "accent": "#0a0a0a", "accent2": "#525252", "font_head": "JetBrains Mono", "font_body": "IBM Plex Sans", "background": "plain", "card": "flat", "look": "modern"},
+    "lavender": {"label": "Lavender", "bg": "#f7f5ff", "surface": "#ffffff", "text": "#1e1b3a", "muted": "#6b6890", "accent": "#7c3aed", "accent2": "#db2777", "font_head": "Plus Jakarta Sans", "font_body": "Plus Jakarta Sans", "background": "glow", "card": "raised", "look": "modern"},
+    "editorial": {"label": "Editorial", "bg": "#111111", "surface": "#1a1a1a", "text": "#f5f1e8", "muted": "#a39e93", "accent": "#e8c07d", "accent2": "#e8c07d", "font_head": "DM Serif Display", "font_body": "Lora", "background": "plain", "card": "flat", "look": "modern"},
 }
 
 CHOICES = {
@@ -63,6 +68,7 @@ CHOICES = {
     "width": ["narrow", "normal", "wide"],
     "nav": ["sticky", "static", "hidden"],
     "align": ["left", "center"],
+    "look": ["modern", "notebook"],
 }
 
 SOCIALS = ["email", "github", "linkedin", "x", "instagram", "youtube", "dribbble", "website", "resume"]
@@ -71,7 +77,7 @@ SOCIALS = ["email", "github", "linkedin", "x", "instagram", "youtube", "dribbble
 TYPES = {
     "hero": {"label": "Intro / hero", "icon": "star", "variants": ["split", "center", "minimal"], "nav": "", "fields": [
         {"k": "eyebrow", "label": "Small line above", "type": "text", "ph": "Hi, I'm"},
-        {"k": "title", "label": "Headline", "type": "text", "ph": "Your name or a bold one-liner"},
+        {"k": "title", "label": "Headline", "type": "text", "ph": "Your name or a bold one-liner", "hint": "Put a phrase in *asterisks* to set it in italic accent colour."},
         {"k": "subtitle", "label": "Intro text", "type": "textarea", "ph": "What you do, in one or two sentences."},
         {"k": "image", "label": "Photo", "type": "image"},
         {"k": "primary_label", "label": "Main button", "type": "text", "ph": "View my work"},
@@ -189,8 +195,8 @@ def seed(ws):
         {"name": "Frontend", "items": "React, TypeScript, HTML, CSS"}, {"name": "Backend", "items": "Node.js, Python, REST APIs, MongoDB"}]
     first = name.split()[0]
     return {
-        "theme": {"preset": "midnight", **{k: v for k, v in PRESETS["midnight"].items() if k != "label"},
-                  "radius": 16, "button": "gradient", "spacing": "normal", "width": "normal", "nav": "sticky", "align": "left", "animate": True},
+        "theme": {"preset": "notebook", **{k: v for k, v in PRESETS["notebook"].items() if k != "label"},
+                  "radius": 6, "spacing": "normal", "width": "normal", "nav": "sticky", "align": "center", "animate": True},
         "profile": {"name": name, "socials": socials},
         "seo": {"title": f"{name} · {role}", "description": f"{name} is a {role}. Projects, experience and how to get in touch.", "favicon": "✦", "image": "", "lang": "en", "index": True, "google": ""},
         "sections": [
@@ -359,9 +365,14 @@ def intro(d):
     return f'<div class="intro rv">{md(d.get("text"))}</div>' if d.get("text") else ""
 
 
+def emph(s):
+    """Escaped text where *a phrase* becomes <em>a phrase</em> (the notebook look sets it in the accent colour)."""
+    return re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"<em>\1</em>", escape(s))
+
+
 def head(d, fallback=""):
     h = d.get("heading") or fallback
-    return f'<h2 class="sh rv">{escape(h)}</h2>' if h else ""
+    return f'<h2 class="sh rv">{emph(h)}</h2>' if h else ""
 
 
 def render_section(s, cfg, projects):
@@ -370,7 +381,7 @@ def render_section(s, cfg, projects):
     if kind == "hero":
         img = safe_url(d.get("image"))
         badge = f'<span class="badge rv"><i></i>{escape(d["badge"])}</span>' if d.get("badge") else ""
-        body = (f'{badge}<h1 class="rv">{f'<span class="eyebrow">{escape(d["eyebrow"])}</span>' if d.get("eyebrow") else ""}<span class="h1-main">{escape(d.get("title") or cfg["profile"]["name"])}</span></h1>'
+        body = (f'{badge}<h1 class="rv">{f'<span class="eyebrow">{escape(d["eyebrow"])}</span>' if d.get("eyebrow") else ""}<span class="h1-main">{emph(d.get("title") or cfg["profile"]["name"])}</span></h1>'
                 f'<div class="lead rv">{md(d.get("subtitle"))}</div><div class="actions rv">{btn(d.get("primary_label"), d.get("primary_link"))}{btn(d.get("secondary_label"), d.get("secondary_link"), "ghost")}</div>'
                 + (f'<div class="rv">{social_links(socials)}</div>' if d.get("socials") else ""))
         pic = f'<div class="hero-img rv"><img src="{escape(img)}" alt="Photo of {escape(cfg["profile"]["name"])}" width="460" height="460" fetchpriority="high" decoding="async"></div>' if img and v == "split" else ""
@@ -583,7 +594,8 @@ def render(cfg, projects, slug="", preview=False, nonce=""):
         if s["nav"]:
             nav.append(f'<a href="#{anchor}">{escape(s["nav"])}</a>')
         body.append(f'<section id="{anchor}" data-sid="{s["id"]}"><div class="wrap">{render_section(s, cfg, projects)}</div></section>')
-    fams = "&".join(f"family={FONTS[f]}" for f in dict.fromkeys([t["font_head"], t["font_body"]]))
+    notebook = t.get("look") == "notebook"
+    fams = "&".join(f"family={FONTS[f]}" for f in dict.fromkeys([t["font_head"], t["font_body"], *(site_notebook.EXTRA_FONTS if notebook else ())]))
     title = escape(seo.get("title") or prof["name"])
     desc = escape(seo.get("description") or "")
     head_html, ld = seo_head(cfg, shown, projects, slug, preview)
@@ -618,8 +630,8 @@ d.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(a&&!
 {head_html}<meta name="theme-color" content="{t['bg']}"><meta name="color-scheme" content="{'dark' if on_color(t['bg']) == '#ffffff' else 'light'}">
 <link rel="icon" href="data:image/svg+xml,{quote('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">' + escape(seo.get("favicon") or "✦") + "</text></svg>")}">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?{fams}&display=swap" rel="stylesheet">
-<script type="application/ld+json">{ld}</script><style>{css(t)}</style><noscript><style>.anim .rv{{opacity:1;transform:none}}</style></noscript></head>
-<body class="{'anim' if t['animate'] else ''}"><nav class="top" aria-label="Main"><div class="wrap nav-in"><a class="brand" href="#top">{escape(prof['name'])}</a><div class="nav-links">{''.join(nav)}</div>
+<script type="application/ld+json">{ld}</script><style>{css(t)}{site_notebook.css(t) if notebook else ""}</style><noscript><style>.anim .rv{{opacity:1;transform:none}}</style></noscript></head>
+<body class="{'anim' if t['animate'] else ''} {'nb' if notebook else ''}"><nav class="top" aria-label="Main"><div class="wrap nav-in"><a class="brand" href="#top">{escape(prof['name'])}</a><div class="nav-links">{''.join(nav)}</div>
 <button class="menu" aria-label="Menu"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></nav>
 <main>{''.join(body)}</main>
 <footer><div class="wrap foot"><span>© {date.today().year} {escape(prof['name'])}</span>{social_links(prof['socials'])}</div>

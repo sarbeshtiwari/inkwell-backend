@@ -1,5 +1,8 @@
 """Accounts and sessions: users, login sessions, account deletion, startup checks and indexes."""
 
+import base64
+import hashlib
+import hmac
 import os
 import secrets
 import sys
@@ -82,6 +85,39 @@ def new_user(email, name, uid=None, terms=None):
                         "created": time.time(), "last_login": None,
                         "terms_accepted": {"version": terms, "at": time.time()} if terms else None})
     return uid
+
+
+# Passwords: scrypt (Python's built-in), a random salt per user. Only the hash is stored; never the password.
+SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
+
+
+def hash_password(password):
+    salt = secrets.token_bytes(16)
+    h = hashlib.scrypt(password.encode(), salt=salt, maxmem=64 * 1024 * 1024, **SCRYPT)
+    return f"scrypt${SCRYPT['n']}${SCRYPT['r']}${SCRYPT['p']}${base64.b64encode(salt).decode()}${base64.b64encode(h).decode()}"
+
+
+def password_ok(stored, password):
+    """True when `password` matches the stored hash. A missing hash still does the work, so timing doesn't reveal it."""
+    try:
+        _, n, r, p, salt, h = (stored or DUMMY_HASH).split("$")
+        got = hashlib.scrypt(password.encode(), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p),
+                             dklen=len(base64.b64decode(h)), maxmem=64 * 1024 * 1024)
+        return bool(stored) and hmac.compare_digest(got, base64.b64decode(h))
+    except (ValueError, TypeError):
+        return False
+
+
+DUMMY_HASH = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$" + base64.b64encode(bytes(32)).decode()
+
+
+def set_password(uid, password):
+    M.users.update_one({"_id": uid}, {"$set": {"pw": hash_password(password), "pw_set": time.time()}})
+
+
+def password_of(uid):
+    row = M.users.find_one({"_id": uid}, {"pw": 1})
+    return (row or {}).get("pw")
 
 
 def find_user(email=None, uid=None):
