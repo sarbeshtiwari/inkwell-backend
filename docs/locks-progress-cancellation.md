@@ -8,7 +8,7 @@ separate processes, restarts and a future worker service. Code: `infra/locks.py`
 
 | Before (per process) | Used for | Now |
 |---|---|---|
-| `workspace.LOCKS` (RLock per user) | `with ws.lock:` around read-modify-write of account data (≈90 call sites) | `locks.user_lock(uid)`: shared lease `u:<uid>:workspace`, re-entrant in a thread, threads of one process queue locally first. Saves made while holding it are fenced. |
+| `workspace.LOCKS` (RLock per user) | `with ws.lock:` around read-modify-write of account data (≈90 call sites) | `locks.user_lock(uid)`: shared lease `u:<uid>:workspace`, re-entrant in a thread, threads of one process queue locally first. Saves made while holding it are transactions that re-check the lease (see below). |
 | `sending.JOBS`, `JOBS_LOCK`, `Job.stop` | one campaign per account, its live log and progress, Stop | operation `send`; Stop = cancel request; the loop checks between people and while waiting |
 | `inbox.LOCK`, `inbox.PROGRESS` | one inbox sync per account, its progress | operation `inbox` |
 | `apps.mailbox.SYNC_LOCK`, `PROGRESS` | application sync | operation `apps_sync` |
@@ -20,7 +20,7 @@ separate processes, restarts and a future worker service. Code: `infra/locks.py`
 | `briefing.BUILDING` | one briefing build per account | operation `briefing` |
 | `research.RUNNING` | one research per company | operation `research`, key = company id |
 | `whatsapp_store.WA_LINKS`, `BUSY` | QR linking, one WhatsApp browser per account | operation `wa_link` (QR image encrypted, erased at the end); lease `wa-browser` |
-| `bridge.every` loops, bounce watcher | background ticks | each tick holds `g:loop:<name>`; bounce checks hold `bounce-check` per account |
+| `bridge.every` loops, bounce watcher, WhatsApp-expiry loop, per-process `LAST`/`last`/`BOUNCE_CHECK_SOON` throttles | background jobs | shared schedule (`schedules`): one run per interval across all processes, never overlapping; per-account due times stored in MongoDB (see Recurring jobs) |
 
 Deliberately still per process (not coordination state):
 - **Machine-local limits:** `SLOTS` (browsers on this machine) and `APPLY_LOCK` (one apply browser on this machine).
@@ -34,7 +34,8 @@ Deliberately still per process (not coordination state):
 - `_id` is `u:<uid>:<resource>` or `g:<resource>`. Other fields: `token`, `fence`, `owner` (host:pid:thread),
   `expires_at`, `acquired_at`, `renewed_at`, `released_at`.
 - **Acquire:** one conditional update, judged by the server clock (`$$NOW`). It succeeds only if the lease is free or
-  expired. The record is created on first use.
+  expired. The record is created on first use. Each attempt waits at most 500 ms on a record that is in another
+  holder's open transaction, and then counts as busy.
 - **Fence:** never decreases. Each acquisition sets it to `max(previous + 1, server time in ms)`, so it can't restart
   low even if records are removed.
 - **Renew:** every `LOCK_RENEW_SECONDS`, and only while the lease is still ours and unexpired. Losing it marks the
@@ -45,8 +46,22 @@ Deliberately still per process (not coordination state):
 - **Stale holders:**
   - `ensure()` stops a holder once less than `min(LOCK_SAFETY_SECONDS, lease/3)` remains. The check uses the local
     monotonic clock, measured from before the request that set the lease.
-  - Account writes made under `ws.lock` carry the fence. A document already written by a newer holder rejects the
-    write, and the stale holder gets `LeaseLost`.
+  - **Protected writes are transactions** (`locks.guarded_write`). This covers account data saved under `ws.lock`,
+    and releasing a portfolio address. One MongoDB transaction:
+    1. re-checks every lease the thread holds for that account on its lock record: our token, not expired by the
+       server clock;
+    2. touches that lock record;
+    3. writes.
+  - **A stale holder can never write:** if its lease expired or was taken over, the transaction aborts with
+    `LeaseLost` and nothing is written. This holds however long it was paused, and whether or not the new holder has
+    written yet.
+  - **No takeover between check and commit:** step 2 writes the lock record, so a competing acquire waits for the
+    transaction to finish, or is told "busy".
+  - **Retries and limits:** transient conflicts are retried within `LOCK_TXN_SECONDS`. Any database failure raises
+    `LockUnavailable` (503) and writes nothing.
+  - **Replica set required:** Atlas always is one. Locally, `start.command` starts a one-node set and
+    `tools/local_replset.py` initialises it. On a plain server, protected writes are refused, never done unguarded.
+    Writes made outside `ws.lock` are plain writes, as before.
 - **Indexes:** `_id`, plus `(uid, resource)`.
 
 ## Operations (`operations` collection)
@@ -98,35 +113,72 @@ Deliberately still per process (not coordination state):
 - **Not cancellable part-way:** a single AI-match search and a single company research. They check before starting
   and before saving.
 
+## Recurring jobs (`schedules` collection)
+`schedules` holds one document per job (`g:<name>`) or per account and job (`u:<uid>:<name>`): `next_at`, `last_at`.
+
+- **`schedule.claim(name, every)`:** atomically takes the current slot, only if `next_at` has passed by the server
+  clock, and moves `next_at` on. Exactly one caller gets each slot.
+- **`soon` / `postpone`:** move the next slot earlier or later.
+- **`once`:** an "exactly once" marker (removed after a TTL), taken *before* an external action.
+
+**`bridge.every(seconds, fn, name)`:**
+- Every process wakes every `seconds`.
+- A run needs both the `loop:<name>` lease (no overlap with a run still going anywhere) and the interval's slot (once
+  per interval in total, not once per process).
+- **Leadership:** there is no fixed leader. Whichever process gets the lease and the slot runs it. Its lease is
+  renewed while it runs.
+- **If the process running it dies:** the lease expires within `LOCK_LEASE_SECONDS`, and the next slot runs in any
+  process.
+
+| Job | Interval | Per-account coordination | Notes |
+|---|---|---|---|
+| send-queue | 20 s | each queued item claimed atomically | an item stuck mid-send is marked failed after 10 min, never resent |
+| job-alert-scan | 10 min | slot `job-alert-scan` (55 min) + lease held by `scan_alerts` itself for the whole scan | a timed-out caller can't let a second scan run; only new jobs are announced |
+| reply-watcher | 1 min | slot `reply-check` (170 s); a manual check postpones it | lease `replies-scan` held by the scan; replies de-duplicated |
+| daily-sync | 1 min | `once("daily-sync:<date>")` + task lease `mail_sync` | the morning sync starts and announces once a day |
+| learning-briefing | 5 min | task lease `briefing` + "today's briefing exists" | |
+| ai-weekly-digest | 1 h | `once("weekly-digest:<week>")` taken before notifying | at most once a week, even across a crash |
+| bounce-watcher | 30 s | slot `bounce-check` (10 min; `check_bounces_soon` after a send) + lease held by `check_bounces` itself | seen bounces de-duplicated |
+| wa-expiry | 1 min | each deletion atomic (`find_one_and_delete` on the file id) | the owner is told once |
+
 ## Settings
 | Variable | Default | Meaning |
 |---|---|---|
 | `LOCK_LEASE_SECONDS` | 30 | lease length |
 | `LOCK_RENEW_SECONDS` | 10 | renewal interval (at most a third of the lease) |
 | `LOCK_SAFETY_SECONDS` | 5 | a holder stops when less than this remains (at most a third of the lease) |
+| `LOCK_TXN_SECONDS` | 10 | time limit for one protected write, retries included |
 | `OPERATIONS_KEEP_DAYS` | 7 | how long finished runs are kept |
 
 None of these are required: the defaults suit Render.
 
 ## Compatibility and rollback
-- **Additive:** two new collections (`locks`, `operations`) and their indexes. Account data documents (`kv`) gain a
-  small `fences` field.
-- **Account saves:** they are now `$set` upserts instead of full replaces. The previous release reads the same
-  documents, and its full replace simply drops `fences`.
+- **Additive:** three new collections (`locks`, `operations`, `schedules`) and their indexes. Account data documents
+  are unchanged: the same full replace, just inside a transaction when made under the lock.
+- **The database must be a replica set.** Atlas already is. A local MongoDB must be started with `--replSet rs0` and
+  initialised once (`tools/local_replset.py`); the data folder is kept.
 - **Rolling back:**
   - Redeploy `8b59986`.
   - Runs in flight at that moment stop. Their records stay as `running` until the TTL or a later release settles them.
   - The old code ignores both new collections.
-  - Optionally drop `locks` and `operations` afterwards.
+  - Optionally drop `locks`, `operations` and `schedules` afterwards.
+  - The old code runs fine against a replica set, so a local MongoDB can stay one.
 - **Moving forward again after a rollback:** fences restart from the server clock, so they still increase.
 
 ## Known limitations
-- **Paused writer:** a process paused for longer than the safety margin between its lease check and its write can
-  still win if it writes a document the new holder hasn't written yet. Fencing covers documents the new holder has
-  written. Closing the gap fully needs multi-document transactions, and Atlas supports them.
-- **Lock latency:** each `with ws.lock:` costs about 2 extra database round trips (acquire and release). Measured
-  locally: 0.34 ms extra per locked save, about 4 local round trips. On Atlas this is a few ms to tens of ms per
-  locked write.
+- **A holder frozen inside its transaction:** it keeps the lock record busy until its transaction ends. Others are
+  told "busy" after their wait; they never hang. Its client gives up after `LOCK_TXN_SECONDS`, and MongoDB aborts any
+  transaction after 60 s.
+- **Cost:** a locked account operation takes 7 database operations, against 3 before:
+  - acquire, the account check and the read, as before;
+  - inside the transaction: the lease check, the write and the commit;
+  - release.
+
+  On a cluster with an operations-per-second cap, this lowers how many such operations fit per second.
+  Measurements are in the Step 2 report; run `tools/bench_locks.py` where the app runs.
+- **Writes to other records:** only writes routed through `guarded_write` are protected. That means account data
+  saved under the lock, and the portfolio address release. Other records written while holding a lock (for example
+  send logs and queue items) rely on their own atomic updates, as before.
 - **Long single steps:** a slow mailbox or browser step can't be interrupted part-way, by design. Cancellation waits
   for the step to finish.
 - **Settling dead runs:** a run whose process died is shown as `interrupted` once its lease expires (up to

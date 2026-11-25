@@ -31,11 +31,11 @@ import migrations
 from core import (accounts, bounces, config, crypto, db, http, mail, pages, security, sending, sentmail, storage,
                   tables, validation, whatsapp_store, workspace)
 from core.accounts import init_storage
-from core.bounces import bounce_watcher
+from core.bounces import bounce_tick
 from core.config import DEV_OTP, env_int
 from core.http import app
 from core.storage import move_files_to_cloudinary
-from core.whatsapp_store import wa_expiry_watcher
+from core.whatsapp_store import wa_expiry_tick
 # Importing a route module registers its URLs on `app` (same order as before the split).
 from routes import auth, contacts, site_pages, workspace_api, send, whatsapp, leads
 from routes import operations as _operations_routes  # noqa: F401  (registers the /api/operations routes)
@@ -82,8 +82,8 @@ for _bp in (feature_github.bp, feature_jobs.bp, feature_linkedin.bp, feature_app
     app.register_blueprint(_bp)
 
 if os.environ.get("BOUNCE_WATCH", "1") == "1":
-    threading.Thread(target=bounce_watcher, daemon=True, name="bounce-watcher").start()
-    threading.Thread(target=wa_expiry_watcher, daemon=True, name="wa-expiry").start()
+    bridge.every(30, bounce_tick, "bounce-watcher")
+    bridge.every(60, wa_expiry_tick, "wa-expiry")
     feature_jobs.start_workers()
     feature_apps.start_workers()
     feature_replies.start_workers()

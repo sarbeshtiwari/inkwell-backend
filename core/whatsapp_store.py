@@ -93,15 +93,12 @@ def expire_wa_sessions(now=None):
     return gone
 
 
-def wa_expiry_watcher():
-    while True:
-        time.sleep(60)
-        try:
-            n = expire_wa_sessions()
-            if n:
-                print(f"[Inkwell] removed {n} expired WhatsApp login(s).", flush=True)
-        except Exception as e:
-            print(f"[Inkwell] WhatsApp expiry error: {e}", flush=True)
+def wa_expiry_tick():
+    """Every minute (bridge.every, one process at a time). Each deletion is atomic, so a login is removed and its
+    owner told exactly once even if two passes overlap."""
+    n = expire_wa_sessions()
+    if n:
+        print(f"[Inkwell] removed {n} expired WhatsApp login(s).", flush=True)
 
 
 SLOTS = threading.BoundedSemaphore(MAX_BROWSERS)

@@ -6,7 +6,6 @@ import uuid
 from datetime import date, datetime
 
 from pymongo import ASCENDING, DESCENDING
-from pymongo.errors import DuplicateKeyError
 
 from core.config import DEFAULT_SETTINGS, STARTER_TEMPLATE
 from core.crypto import lookup_hash, seal, unseal
@@ -48,16 +47,10 @@ class Workspace:
                           "columns or history) and try again.", status=413)
         if DELETED.get(self.uid) or not M.users.find_one({"_id": self.uid}, {"_id": 1}):
             return  # the account was deleted while a background job was still running: don't recreate its data
-        held = locks.current(self.uid)
-        if not held:  # $set (not replace) keeps the fence numbers stored on the document
-            M.kv.update_one({"_id": f"{self.uid}:{key}"}, {"$set": {"uid": self.uid, "key": key, "data": blob}}, upsert=True)
-            return
-        # Written under this account's lock: fenced, so a holder whose lease ran out can't overwrite newer data.
-        query, values = locks.fenced(held, {"_id": f"{self.uid}:{key}"}, {"uid": self.uid, "key": key, "data": blob})
-        try:
-            M.kv.update_one(query, {"$set": values}, upsert=True)
-        except DuplicateKeyError:  # the document carries a newer fence: someone else holds the lock now
-            raise locks.LeaseLost() from None
+        doc = {"uid": self.uid, "key": key, "data": blob}
+        # Under this account's lock, the write is a transaction that first re-checks the lease: a holder whose lease
+        # ran out (paused, partitioned) can't overwrite anything. Without the lock it's a plain write, as before.
+        locks.guarded_write(self.uid, lambda s: M.kv.replace_one({"_id": f"{self.uid}:{key}"}, doc, upsert=True, session=s))
 
     def settings(self):
         return {**DEFAULT_SETTINGS, **self.load("settings", {})}

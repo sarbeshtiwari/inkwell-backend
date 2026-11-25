@@ -22,6 +22,7 @@ from features.ai_jobs import models, signals
 from features.ai_jobs import tailor_rules as R
 from features.ai_jobs.evaluate import GUARD, find_job, job_text, llm, render_pdf, resume_for, resume_lines
 from features.ai_jobs.ranking import cosine, tokens
+from infra import schedule
 
 
 # --- tailored resume + fact check -----------------------------------------------------------------------------
@@ -508,6 +509,8 @@ def weekly_digest_all():
             strong = sum(1 for r in ws.load("ai_match", {}).get("results", []) if r.get("score", 0) >= 70)
             due = sum(1 for f in due_followups(ws) if f["kind"] != "cold")
             ins = insights(ws, 7)
+            if not schedule.once(f"weekly-digest:{week.lower()}", ws.uid):
+                continue  # already sent this week (another process, or before a crash)
             notify(ws.uid, "Your job search this week",
                    f"{strong} strong matches · {due} follow-up{'s' if due != 1 else ''} due · {ins['total']['total']} applied, "
                    f"{ins['total']['rate']}% replied", "/app/ai-jobs", "info")

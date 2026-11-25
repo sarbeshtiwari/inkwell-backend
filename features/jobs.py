@@ -23,6 +23,7 @@ from flask import Blueprint, jsonify
 
 import bridge
 from bridge import login_required
+from infra import locks, schedule
 
 bp = Blueprint("jobs", __name__)
 
@@ -253,7 +254,19 @@ def source_for(from_header):
 
 
 def scan_alerts(ws, days=7, limit=300):
-    """Read job-alert emails (read-only) and store new jobs; returns counts."""
+    """Read job-alert emails (read-only) and store new jobs; returns counts.
+    One scan per account at a time across every process: the lease is held for the whole scan by the thread doing
+    it (a caller that stops waiting can't let a second scan start and announce the same jobs)."""
+    lease = locks.try_acquire("job-alert-scan", ws.uid)
+    if lease is None:
+        raise C().Invalid("A job alert scan is already running.", status=409)
+    try:
+        return _scan_alerts(ws, days, limit)
+    finally:
+        lease.release()
+
+
+def _scan_alerts(ws, days, limit):
     core = C()
     imap = core.imap_connect(ws.profile())
     seen = set(ws.load("jobs_seen_mail", []))
@@ -472,6 +485,8 @@ def auto_scan_all():
         last = ws.settings().get("jobs_scanned_at")
         if last and (datetime.now() - datetime.fromisoformat(last)).total_seconds() < 3300:
             continue
+        if not schedule.claim("job-alert-scan", 3300, ws.uid):
+            continue  # another process just took this account's scan
         try:
             r = bridge.with_deadline(300, scan_alerts, ws, days=3, limit=150)
             if r["added"] and getattr(bridge, "notify", None):
@@ -781,7 +796,7 @@ def send_queued_email(ws, payload):
     ws.log("email", payload["to"], "", status, detail, rid=rid, preview=payload["subject"],
            message_id=msg["Message-ID"] if status == "sent" and msg else None)
     if status == "sent":
-        core.BOUNCE_CHECK_SOON[ws.uid] = time.time() + 120
+        core.check_bounces_soon(ws.uid)
     return status == "sent", detail or "Sent"
 
 

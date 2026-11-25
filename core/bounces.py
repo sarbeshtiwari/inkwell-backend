@@ -15,7 +15,7 @@ from core.db import M
 from core.mail import imap_connect
 from core.validation import Invalid
 from core.workspace import Workspace, bridge_mod
-from infra import locks
+from infra import locks, schedule
 
 
 def domain_problem(domain, cache):
@@ -105,7 +105,19 @@ def parse_bounce(raw):
 
 
 def check_bounces(ws, days=14):
-    """Read bounce notices from the sender's inbox (read-only) and mark matching sends as bounced."""
+    """Read bounce notices from the sender's inbox (read-only) and mark matching sends as bounced.
+    One check per account at a time across every process: the lease is held for the whole check, by the thread doing
+    it (so a caller that stops waiting, e.g. with_deadline, can't let a second check start meanwhile)."""
+    lease = locks.try_acquire("bounce-check", ws.uid, busy="A bounce check is already running.")
+    if lease is None:
+        raise Invalid("A bounce check is already running.", status=409)
+    try:
+        return _check_bounces(ws, days)
+    finally:
+        lease.release()
+
+
+def _check_bounces(ws, days):
     profile = ws.profile()
     if not profile.get("smtp_password"):
         raise Invalid("Set up email on the Profile page first.")
@@ -171,35 +183,21 @@ def check_bounces(ws, days=14):
     return {"checked": checked, "bounced": found}
 
 
-BOUNCE_CHECK_SOON = {}   # uid -> when to run an extra check after a campaign
+def check_bounces_soon(uid, seconds=120):
+    """Look for bounce notices shortly after a send (shared schedule: whichever process runs the watcher sees it)."""
+    schedule.soon("bounce-check", seconds, uid)
 
 
-def bounce_watcher():
-    """Background loop: checks accounts that sent email recently, every 10 minutes (sooner right after a run)."""
-    last = {}
-    while True:
-        time.sleep(30)
+def bounce_tick():
+    """Every 30 s (bridge.every, one process at a time): check accounts that sent email in the last 3 days, each at
+    most every 10 minutes (sooner right after a send). Due times live in the shared schedule."""
+    from core.sending import send_running  # (late: sending also uses this module)
+    for uid in M.send_log.distinct("uid", {"ts": {"$gt": time.time() - 3 * 86400}, "mid": {"$exists": True}}):
+        if send_running(uid):
+            continue  # stays due; checked after the campaign
+        if not schedule.claim("bounce-check", 600, uid):
+            continue
         try:
-            now = time.time()
-            recent = M.send_log.distinct("uid", {"ts": {"$gt": now - 3 * 86400}, "mid": {"$exists": True}})
-            for uid in recent:
-                due = BOUNCE_CHECK_SOON.get(uid, 0)
-                if (due and now >= due) or now - last.get(uid, 0) > 600:
-                    from core.sending import (
-                        send_running,  # (late: sending also uses this module)
-                    )
-                    if send_running(uid):
-                        continue
-                    BOUNCE_CHECK_SOON.pop(uid, None)
-                    last[uid] = now
-                    lease = locks.try_acquire("bounce-check", uid, ttl=300)  # one check per account across processes
-                    if lease is None:
-                        continue
-                    try:
-                        bridge_mod().with_deadline(240, check_bounces, Workspace(uid), days=4)
-                    except Exception as e:
-                        print(f"[Inkwell] bounce check skipped for an account: {getattr(e, 'message', e)}", flush=True)
-                    finally:
-                        lease.release()
+            bridge_mod().with_deadline(240, check_bounces, Workspace(uid), days=4)
         except Exception as e:
-            print(f"[Inkwell] bounce watcher error: {e}", flush=True)
+            print(f"[Inkwell] bounce check skipped for an account: {getattr(e, 'message', e)}", flush=True)

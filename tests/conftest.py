@@ -31,6 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 assert DB_NAME != "reachout"
 
 import app as A  # noqa: E402  (configured by the environment above)
+from infra import locks as _locks  # noqa: E402
+
+# Protected account writes are MongoDB transactions: the test database must be a replica set (as Atlas is).
+if not _locks.transactions_supported():
+    raise SystemExit("The local MongoDB must run as a replica set: start it with --replSet rs0, then run "
+                     "`python backend/tools/local_replset.py` (start.command does both).")
 
 H = {"X-Requested-With": "fetch"}
 

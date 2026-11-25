@@ -18,6 +18,7 @@ from flask import Blueprint, Response, jsonify, redirect
 import bridge
 from features import github as ghub
 from bridge import login_required
+from infra.locks import guarded_write
 
 bp = Blueprint("portfolio", __name__)
 
@@ -239,7 +240,8 @@ def settings(ws):
             if slug in RESERVED_SLUGS or not claim(ws.uid, slug):
                 raise core.Invalid("That address is taken. Try another.", "slug")
             if c.get("slug") and c["slug"] != slug:
-                core.M.site.delete_one({"_id": "portfolio-slug:" + c["slug"], "uid": ws.uid})
+                old = "portfolio-slug:" + c["slug"]  # released under the account lock (lease re-checked in the transaction)
+                guarded_write(ws.uid, lambda s: core.M.site.delete_one({"_id": old, "uid": ws.uid}, session=s))
             c["slug"] = slug
         if "target" in p:
             t = p["target"] or {}

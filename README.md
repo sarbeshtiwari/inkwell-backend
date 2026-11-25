@@ -175,8 +175,10 @@ helpers through `bridge.C` (the `app` module, which looks names up live in `core
 
 ## Run locally
 
-Needs Python 3.12 and MongoDB on `127.0.0.1:27017` (`brew install mongodb-community`, or Docker:
-`docker run -d -p 127.0.0.1:27017:27017 mongo:8`).
+Needs Python 3.12 and MongoDB on `127.0.0.1:27017`, running as a one-node replica set (account changes are saved
+in MongoDB transactions; Atlas is always a replica set). With Homebrew: `brew install mongodb-community`, start
+`mongod --replSet rs0 --bind_ip 127.0.0.1 --dbpath <folder>`, then run `python tools/local_replset.py` once. With Docker:
+`docker run -d -p 127.0.0.1:27017:27017 mongo:8 --replSet rs0`, then the same script.
 
 ```bash
 python3 -m venv .venv

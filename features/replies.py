@@ -24,7 +24,7 @@ from flask import Blueprint, jsonify, request
 import bridge
 from features import apps as fa
 from bridge import login_required
-from infra import locks
+from infra import locks, schedule
 
 bp = Blueprint("replies", __name__)
 
@@ -347,7 +347,7 @@ def scan(ws, first_days=21):
     lease = locks.try_acquire("replies-scan", ws.uid)  # one scan per account across processes
     if lease is None:
         return {"found": 0, "skipped": "busy"}
-    locks.push(lease)  # account writes during the scan are fenced by this lease
+    locks.push(lease)  # account writes during the scan are guarded by this lease too (guarded_write)
     state = ws.load("replies_sync", {})
     found = []
     try:
@@ -475,7 +475,7 @@ def announce(ws, found):
 
 # ================================================================= background worker
 
-LAST = {}
+CHECK_EVERY = 170  # seconds between automatic reply checks per account (shared schedule, all processes)
 
 
 def tick():
@@ -483,14 +483,13 @@ def tick():
     now = time.time()
     recent = set(core.M.send_log.distinct("uid", {"ts": {"$gt": now - 60 * 86400}}))
     for uid in recent:
-        if now - LAST.get(uid, 0) < 170:
-            continue
         if core.sending.send_running(uid):
             continue  # don't compete with a campaign for the mailbox
         ws = core.Workspace(uid)
         if not ws.profile().get("smtp_password"):
             continue
-        LAST[uid] = now
+        if not schedule.claim("reply-check", CHECK_EVERY, uid):
+            continue
         try:
             bridge.with_deadline(240, scan, ws)
         except Exception as e:
@@ -544,7 +543,7 @@ def check_now(ws):
         raise C().Invalid("Set up email on the Profile page first.")
     if C().rate_limited(("reply-check", ws.uid), 20, 600):
         raise C().Invalid("Checked a lot just now. Try again in a few minutes.", status=429)
-    LAST[ws.uid] = time.time()
+    schedule.postpone("reply-check", CHECK_EVERY, ws.uid)  # the automatic check can skip this round
     r = scan(ws)
     return jsonify(r)
 
@@ -831,6 +830,6 @@ def send_reply(ws, key):
             events = ws.events(rid)
             events.insert(0, {"id": core.new_id(), "type": "answered", "at": now, "text": f"You replied: {subject}", "body": text[:1500]})
             ws.save(f"contact:{rid}", events[:500])
-    core.BOUNCE_CHECK_SOON[ws.uid] = time.time() + 120
+    core.check_bounces_soon(ws.uid)
     SENT_CACHE.pop(ws.uid, None)
     return jsonify(ok=True, at=now)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import whatsapp as wa
 
-from core.bounces import BOUNCE_CHECK_SOON, domain_problem
+from core.bounces import check_bounces_soon, domain_problem
 from core.config import DAILY_LIMIT, LOGGED_IN, MIN_WA_DELAY, WHATSAPP_ENABLED
 from core.crypto import lookup_hash
 from core.mail import build_email, smtp_connect
@@ -345,7 +345,7 @@ def _run_job(ws, job, cfg):
                     job.failed += 1
             job.done = i
             if i == len(todo) and any("email" in c for _, c in todo):
-                BOUNCE_CHECK_SOON[ws.uid] = time.time() + 120  # look for bounce notices shortly after the run
+                check_bounces_soon(ws.uid)  # look for bounce notices shortly after the run
             if i < len(todo) and not job.should_stop():
                 wait = random.randint(min_delay, max_delay)
                 job.lines.append(f"{datetime.now():%H:%M:%S}  Waiting {wait}s…")

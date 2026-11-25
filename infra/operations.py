@@ -17,7 +17,7 @@ process:
   Each update increments `version`.
 - **External actions** (sending a message, submitting an application) call checkpoint() right before acting, so a
   run that lost its lease or was cancelled stops *before* the action. The record of an action that did happen is always
-  written afterwards (under the account's own lock, which is fenced), never blocked by the run's lease: losing that
+  written afterwards (under the account's own lock, whose writes are guarded), never blocked by the run's lease: losing that
   record could make a later run repeat the action.
 - **Cancellation** sets `cancel_requested` on the running document (from any process; idempotent; a finished run is
   left alone). The work calls checkpoint() / wait() between units of work, never in the middle of one, and stops with

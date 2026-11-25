@@ -6,7 +6,7 @@ import bridge
 
 from features.apps.common import C
 from features.apps.mailbox import scan
-from infra import locks, operations
+from infra import locks, operations, schedule
 
 
 DEFAULT_SYNC = {"auto": True, "time": "06:00", "tz": "Asia/Kolkata"}
@@ -48,6 +48,8 @@ def daily_tick():
         hh, mm = (int(x) for x in p["time"].split(":"))
         if (now.hour, now.minute) < (hh, mm) or state.get("last_auto") == now.date().isoformat():
             continue
+        if not schedule.once(f"daily-sync:{now.date().isoformat()}", ws.uid, keep_days=3):
+            continue  # today's morning sync was already started (another process)
         state["last_auto"] = now.date().isoformat()
         ws.save("apps_sync", state)
         start_sync(ws.uid, reason="daily")

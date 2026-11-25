@@ -13,17 +13,18 @@ for something global (a background loop). Holding it means holding a *lease*:
   The record is kept (not deleted) so `fence` keeps growing across holders.
 - **A process that crashes** simply stops renewing; its lease expires and the next acquirer takes over. Expiry is
   decided at acquisition time, not by TTL deletion.
-- **Stale holders can't keep writing.** Each lease tracks, on the local monotonic clock, a conservative "valid until"
-  (measured from *before* the request that set the expiry). `ensure()` refuses once fewer than SAFETY_SECONDS remain.
-  Writes guarded by a lease (see Workspace.save) also carry the fence: a document already written by a newer holder
-  rejects older fences. Remaining window: a process paused for longer than SAFETY_SECONDS between `ensure()` and its
-  write, *and* writing a document the new holder hasn't written yet; closing that needs transactions (see
-  docs/locks-progress-cancellation.md).
+- **Stale holders can't write.** Protected writes (account data saved under `ws.lock`, see guarded_write()) run in a
+  MongoDB transaction that first re-checks, on the lock record, that our token still holds an unexpired lease (server
+  clock), then writes. A holder whose lease ran out, or was taken over, aborts without writing, however long it was
+  paused and whether or not the new holder has written yet. The check also writes the lock record, so nobody can take
+  the lock between our check and our commit (a competing acquire waits or, past ACQUIRE_ATTEMPT_MS, counts as busy).
+  Transactions need a replica set: Atlas always is one; locally start.command runs a one-node set
+  (tools/local_replset.py). On a plain server, protected writes are refused, never done unguarded.
 
 If MongoDB is unavailable, acquiring fails with LockUnavailable (no silent fallback to a process-local lock), and a
 held lease can't be renewed, so its holder stops at its next `ensure()` instead of carrying on unprotected.
 
-Settings (seconds): LOCK_LEASE_SECONDS (30), LOCK_RENEW_SECONDS (10), LOCK_SAFETY_SECONDS (5).
+Settings (seconds): LOCK_LEASE_SECONDS (30), LOCK_RENEW_SECONDS (10), LOCK_SAFETY_SECONDS (5), LOCK_TXN_SECONDS (10).
 """
 
 import datetime as dt
@@ -36,8 +37,10 @@ import time
 import uuid
 import weakref
 
-from pymongo import ReturnDocument
-from pymongo.errors import PyMongoError
+import pymongo
+from pymongo import ReadPreference, ReturnDocument, WriteConcern
+from pymongo.errors import ExecutionTimeout, PyMongoError
+from pymongo.read_concern import ReadConcern
 
 from core.db import M
 from core.validation import Invalid
@@ -51,6 +54,8 @@ def _seconds(name, default):
 
 
 LEASE_SECONDS = _seconds("LOCK_LEASE_SECONDS", 30.0)
+TXN_SECONDS = _seconds("LOCK_TXN_SECONDS", 10.0)    # client-side limit for one protected write, retries included
+ACQUIRE_ATTEMPT_MS = 500                            # one acquire attempt waits at most this long on a busy record
 RENEW_SECONDS = _seconds("LOCK_RENEW_SECONDS", 10.0)
 SAFETY_SECONDS = _seconds("LOCK_SAFETY_SECONDS", 5.0)
 EPOCH = dt.datetime(1970, 1, 1)
@@ -133,9 +138,10 @@ class Lease:
             if self._released or self._lost:
                 raise LeaseLost()
             t0 = time.monotonic()
-            r = M.locks.update_one(
-                {"_id": self.id, "token": self.token, "$expr": {"$gt": ["$expires_at", "$$NOW"]}},
-                [{"$set": {"expires_at": {"$add": ["$$NOW", int(self.ttl * 1000)]}, "renewed_at": "$$NOW"}}])
+            with pymongo.timeout(max(1.0, self.ttl / 3)):  # never wait long behind a transaction on the record
+                r = M.locks.update_one(
+                    {"_id": self.id, "token": self.token, "$expr": {"$gt": ["$expires_at", "$$NOW"]}},
+                    [{"$set": {"expires_at": {"$add": ["$$NOW", int(self.ttl * 1000)]}, "renewed_at": "$$NOW"}}])
             if not r.matched_count:
                 self._lost = True
                 raise LeaseLost()
@@ -149,8 +155,10 @@ class Lease:
             self._released = True
         _RENEWER.discard(self)
         try:
-            M.locks.update_one({"_id": self.id, "token": self.token},
-                               {"$set": {"token": None, "owner": None, "expires_at": EPOCH, "released_at": dt.datetime.now(dt.timezone.utc)}})
+            with pymongo.timeout(5):
+                M.locks.update_one({"_id": self.id, "token": self.token},
+                                   {"$set": {"token": None, "owner": None, "expires_at": EPOCH,
+                                             "released_at": dt.datetime.now(dt.timezone.utc)}})
         except PyMongoError as e:
             print(f"[Inkwell] lock {self.id}: release not recorded ({type(e).__name__}); it will expire on its own.", flush=True)
 
@@ -165,6 +173,8 @@ class Lease:
 
 
 def _take(lid, uid, resource, ttl, token):
+    """One acquisition attempt: the lease document after our update, or None if the lock is held (or its record is
+    busy in another holder's transaction for longer than ACQUIRE_ATTEMPT_MS)."""
     update = [{"$set": {"uid": uid, "resource": resource, "token": token, "owner": _owner(),
                         # grows on every acquisition, and never restarts low even if the record is deleted:
                         # at least the server's clock in milliseconds
@@ -172,11 +182,15 @@ def _take(lid, uid, resource, ttl, token):
                         "acquired_at": "$$NOW", "renewed_at": "$$NOW",
                         "expires_at": {"$add": ["$$NOW", int(ttl * 1000)]}}}]
     free = {"_id": lid, "$expr": {"$lte": ["$expires_at", "$$NOW"]}}
-    doc = M.locks.find_one_and_update(free, update, return_document=ReturnDocument.AFTER)
-    if doc is None and M.locks.update_one({"_id": lid}, {"$setOnInsert": {"uid": uid, "resource": resource, "fence": 0,
-                                                                          "token": None, "expires_at": EPOCH}},
-                                          upsert=True).upserted_id is not None:
-        doc = M.locks.find_one_and_update(free, update, return_document=ReturnDocument.AFTER)  # first use of this lock
+    try:
+        doc = M.locks.find_one_and_update(free, update, return_document=ReturnDocument.AFTER, maxTimeMS=ACQUIRE_ATTEMPT_MS)
+        if doc is None and M.locks.find_one_and_update(
+                {"_id": lid}, {"$setOnInsert": {"uid": uid, "resource": resource, "fence": 0, "token": None, "expires_at": EPOCH}},
+                upsert=True, return_document=ReturnDocument.BEFORE, maxTimeMS=ACQUIRE_ATTEMPT_MS) is None:
+            # the record didn't exist: it does now (free), so try once more
+            doc = M.locks.find_one_and_update(free, update, return_document=ReturnDocument.AFTER, maxTimeMS=ACQUIRE_ATTEMPT_MS)
+    except ExecutionTimeout:
+        return None  # its holder is in the middle of a protected write: busy
     return doc
 
 
@@ -235,20 +249,51 @@ def current(uid):
     return [lease for lease in _CTX.__dict__.get("stack", []) if lease.uid == uid]
 
 
-def fence_key(lease):
-    return "fences." + re.sub(r"[^a-z0-9_]", "_", lease.resource)
+_TXN_SUPPORT = {}
 
 
-def fenced(leases, query, values):
-    """Add fencing to a write: refuse it if a newer holder of any of these locks already wrote the document, and record
-    our fences on it. Every lease must still be valid (ensure())."""
-    conds = []
-    for lease in leases:
+def transactions_supported():
+    """True when the server can run multi-document transactions (a replica set or sharded cluster)."""
+    key = id(M.client)
+    if key not in _TXN_SUPPORT:
+        hello = M.client.admin.command("hello")
+        _TXN_SUPPORT[key] = bool(hello.get("setName") or hello.get("msg") == "isdbgrid")
+    return _TXN_SUPPORT[key]
+
+
+def guarded_write(uid, fn):
+    """Run fn(session) as a write protected by the locks this thread holds for `uid`, and return its result.
+
+    Without such locks, fn(None) runs as a plain write (unchanged behaviour). With them, one transaction (1) re-checks
+    each lease on its lock record (our token, unexpired by the server clock) and touches that record, then (2) runs
+    fn(session). If any lease is gone the transaction aborts and LeaseLost is raised: nothing is written. Transient
+    conflicts are retried within TXN_SECONDS. A database that can't run transactions, or a failure, raises
+    LockUnavailable; there is no unguarded fallback."""
+    held = current(uid)
+    if not held:
+        return fn(None)
+    for lease in held:
         lease.ensure()
-        k = fence_key(lease)
-        conds.append({"$or": [{k: {"$exists": False}}, {k: {"$lte": lease.fence}}]})
-        values[k] = lease.fence
-    return ({**query, "$and": conds} if conds else query), values
+
+    def body(session):
+        for lease in held:
+            r = M.locks.update_one({"_id": lease.id, "token": lease.token, "$expr": {"$gt": ["$expires_at", "$$NOW"]}},
+                                   [{"$set": {"last_write_at": "$$NOW"}}], session=session)
+            if not r.matched_count:
+                raise LeaseLost()
+        return fn(session)
+
+    try:
+        if not transactions_supported():
+            raise LockUnavailable("The database must run as a replica set to save this safely. Nothing was changed.")
+        with pymongo.timeout(TXN_SECONDS), M.client.start_session() as session:
+            return session.with_transaction(body, read_concern=ReadConcern("snapshot"),
+                                            write_concern=WriteConcern("majority", j=True),
+                                            read_preference=ReadPreference.PRIMARY)
+    except (LeaseLost, LockUnavailable):
+        raise
+    except PyMongoError as e:
+        raise LockUnavailable("Couldn't confirm the change was saved (database problem). Try again.") from e
 
 
 # ---- renewal --------------------------------------------------------------------------------------------------

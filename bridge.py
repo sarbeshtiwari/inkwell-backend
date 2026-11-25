@@ -42,10 +42,16 @@ def http(method, url, *, token=None, timeout=30, **kw):
 
 
 def every(seconds, fn, name):
-    """Run fn() forever in a daemon thread, every `seconds`, logging (not raising) errors.
-    Each run holds the shared lease `loop:<name>`, so when several processes run the app, one runs it at a time."""
-    from infra import locks
+    """Run fn() about every `seconds` in a daemon thread, logging (not raising) errors.
+
+    Coordinated across every process running the app: each process wakes every `seconds`, but a run happens only if
+    it (1) claims this interval's slot in the shared schedule (exactly one process gets each slot, so the job runs
+    once per interval in total, not once per process) and (2) takes the lease `loop:<name>`, so a run that is still
+    going (longer than the interval, or in another process) is never overlapped. The lease is renewed while fn runs;
+    if that process dies, the lease expires and the next slot runs anywhere."""
+    from infra import locks, schedule
     from infra.redact import error_text
+    slot = seconds * 0.9  # a little under the interval, so processes waking slightly early still find it due
 
     def loop():
         while True:
@@ -53,9 +59,10 @@ def every(seconds, fn, name):
             try:
                 lease = locks.try_acquire(f"loop:{name}")
                 if lease is None:
-                    continue  # another process is running this loop right now
+                    continue  # still running (here or in another process): skip, never overlap
                 try:
-                    fn()
+                    if schedule.claim(f"loop:{name}", slot):
+                        fn()
                 finally:
                     lease.release()
             except Exception as e:  # keep the loop alive

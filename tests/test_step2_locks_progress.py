@@ -171,6 +171,222 @@ def test_stale_owner_cannot_write_after_losing_its_lease():
     assert Workspace(uid).load("step2", {}) == {"by": "new"}
 
 
+EXACT_RACE = """
+real = locks.transactions_supported          # runs right after A's local lease check, before its transaction
+def paused():
+    print("A-checked", locks.current({uid!r})[0].fence, flush=True)
+    sys.stdin.readline()                     # A is frozen here, right before the database write
+    return real()
+locks.transactions_supported = paused
+from core.workspace import Workspace
+ws = Workspace({uid!r})
+try:
+    with ws.lock:
+        ws.save("protected", {{"by": "A (stale)"}})
+    print("A-WROTE", flush=True)
+except locks.LeaseLost:
+    print("A-REJECTED", flush=True)
+"""
+
+
+def test_exact_stale_writer_race_is_rejected():
+    """1. A takes the account lock (fence N). 2. A pauses past its lease. 3. B takes the lock (fence N+1).
+    4. B has NOT written the protected record. 5. A resumes and does its old write: it must be rejected."""
+    uid = _uid()
+    a = subprocess.Popen([sys.executable, "-c", HEAD + EXACT_RACE.format(uid=uid)],
+                         env=_env(LOCK_LEASE_SECONDS=2, LOCK_RENEW_SECONDS=0.5, LOCK_SAFETY_SECONDS=0.5), cwd=BACKEND,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        line = a.stdout.readline().split()
+        assert line[0] == "A-checked"
+        fence_a = int(line[1])
+        os.kill(a.pid, signal.SIGSTOP)                       # 2. paused: no renewals
+        time.sleep(2.5)                                      #    past the 2 s lease
+        b = locks.acquire("workspace", uid, wait=5)          # 3. B: fence N+1
+        assert b.fence > fence_a
+        assert Workspace(uid).load("protected", None) is None   # 4. B hasn't written it
+        os.kill(a.pid, signal.SIGCONT)                       # 5. A resumes
+        a.stdin.write("go\n")
+        a.stdin.flush()
+        out = a.communicate(timeout=30)[0]
+        b.release()
+    finally:
+        if a.poll() is None:
+            os.kill(a.pid, signal.SIGCONT)
+            a.kill()
+    assert "A-REJECTED" in out and "A-WROTE" not in out, out
+    assert Workspace(uid).load("protected", None) is None
+
+
+IN_TXN = """
+from pymongo.collection import Collection
+real = Collection.replace_one
+def paused(self, *a, **k):                   # runs inside A's transaction, after its lease check on the lock record
+    if self.name == "kv" and k.get("session") is not None:
+        print("A-in-transaction", flush=True)
+        sys.stdin.readline()
+    return real(self, *a, **k)
+Collection.replace_one = paused
+from core.workspace import Workspace
+ws = Workspace({uid!r})
+try:
+    with ws.lock:
+        ws.save("protected", {{"by": "A"}})
+    print("A-WROTE", flush=True)
+except locks.LeaseLost:
+    print("A-REJECTED", flush=True)
+except locks.LockUnavailable:
+    print("A-ABORTED", flush=True)
+"""
+
+
+def _in_txn_writer(uid, **env):
+    p = subprocess.Popen([sys.executable, "-c", HEAD + IN_TXN.format(uid=uid)], env=_env(**env), cwd=BACKEND,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert p.stdout.readline().strip() == "A-in-transaction"
+    return p
+
+
+def test_a_holder_frozen_inside_its_transaction_blocks_takeover_until_it_ends():
+    """A has checked its lease inside the transaction and is frozen before writing. Its lease runs out, but nobody can
+    take the lock while A's transaction is open (B is told it's busy); when A finishes, its write lands *before* B
+    holds the lock, so B sees it. Order is preserved: there is never a moment where B holds the lock and A writes."""
+    uid = _uid()
+    a = _in_txn_writer(uid, LOCK_LEASE_SECONDS=2, LOCK_RENEW_SECONDS=0.5, LOCK_SAFETY_SECONDS=0.5)
+    try:
+        os.kill(a.pid, signal.SIGSTOP)
+        time.sleep(2.5)                                        # A's lease has expired by the clock
+        with pytest.raises(locks.LockTimeout):
+            locks.acquire("workspace", uid, wait=2)            # but the record is in A's open transaction: busy
+        os.kill(a.pid, signal.SIGCONT)
+        a.stdin.write("go\n")
+        a.stdin.flush()
+        out = a.communicate(timeout=30)[0]
+    finally:
+        if a.poll() is None:
+            os.kill(a.pid, signal.SIGCONT)
+            a.kill()
+    assert "A-WROTE" in out, out
+    b = locks.acquire("workspace", uid, wait=5)
+    assert Workspace(uid).load("protected", None) == {"by": "A"}   # B sees A's committed write before acting
+    b.release()
+
+
+def test_a_transaction_stuck_past_its_time_limit_is_aborted_and_writes_nothing():
+    uid = _uid()
+    a = _in_txn_writer(uid, LOCK_TXN_SECONDS=1.5)
+    time.sleep(2.5)                                            # past A's client-side limit for the protected write
+    a.stdin.write("go\n")
+    a.stdin.flush()
+    out = a.communicate(timeout=60)[0]
+    assert "A-ABORTED" in out and "A-WROTE" not in out, out
+    assert Workspace(uid).load("protected", None) is None
+    lease = locks.acquire("workspace", uid, wait=5)            # the lock is usable again
+    lease.release()
+
+
+CONTENDER = """
+from pymongo import ReturnDocument
+uid, end, got = {uid!r}, time.time() + 4, []
+while time.time() < end:
+    lease = locks.try_acquire("contended", uid)
+    if lease is None:
+        time.sleep(0.005)
+        continue
+    inside = M.step2.find_one_and_update({{"_id": "inside-" + uid}}, {{"$inc": {{"n": 1}}}}, upsert=True,
+                                         return_document=ReturnDocument.AFTER)["n"]
+    got.append((lease.fence, inside))
+    time.sleep(0.002)
+    M.step2.update_one({{"_id": "inside-" + uid}}, {{"$inc": {{"n": -1}}}})
+    lease.release()
+print(json.dumps(got), flush=True)
+"""
+
+
+def test_many_processes_acquiring_at_once_never_overlap_and_fences_are_unique():
+    uid = _uid()
+    procs = [_spawn(CONTENDER.format(uid=uid)) for _ in range(6)]
+    results = []
+    for p in procs:
+        out = p.communicate(timeout=120)[0]
+        assert p.returncode == 0, out
+        results += [tuple(x) for x in __import__("json").loads(out.strip().splitlines()[-1])]
+    fences = [f for f, _ in results]
+    assert len(results) > 50                                   # plenty of real contention
+    assert all(inside == 1 for _, inside in results)           # never two holders at once
+    assert len(set(fences)) == len(fences)                     # every acquisition got its own fence
+
+
+def test_transient_transaction_errors_are_retried_and_write_once():
+    from pymongo.errors import OperationFailure
+    uid = _uid()
+    calls = {"n": 0}
+
+    def fn(session):
+        calls["n"] += 1
+        M.step2.update_one({"_id": "retry-" + uid}, {"$inc": {"n": 1}}, upsert=True, session=session)
+        if calls["n"] == 1:
+            raise OperationFailure("WriteConflict", code=112, details={"errorLabels": ["TransientTransactionError"]})
+    with locks.user_lock(uid):
+        locks.guarded_write(uid, fn)
+    assert calls["n"] == 2 and M.step2.find_one({"_id": "retry-" + uid})["n"] == 1   # first attempt rolled back
+
+
+def test_a_failure_inside_the_transaction_rolls_everything_back():
+    uid = _uid()
+    ws = Workspace(uid)
+    ws.save("keep", {"v": 1})
+    before = M.locks.find_one({"_id": locks.lock_id("workspace", uid)})
+
+    def fn(session):
+        M.kv.update_one({"_id": f"{uid}:keep"}, {"$set": {"uid": uid, "key": "keep", "data": b"half"}}, session=session)
+        raise RuntimeError("crash in the middle of a protected write")
+    with locks.user_lock(uid):
+        with pytest.raises(RuntimeError):
+            locks.guarded_write(uid, fn)
+    assert ws.load("keep", None) == {"v": 1}                    # the half-done write never became visible
+    after = M.locks.find_one({"_id": locks.lock_id("workspace", uid)})
+    assert (after or {}).get("last_write_at") == (before or {}).get("last_write_at")
+
+
+def test_database_failure_during_a_protected_write_writes_nothing(monkeypatch):
+    from pymongo.errors import AutoReconnect
+    uid = _uid()
+    monkeypatch.setattr(locks, "TXN_SECONDS", 0.5)
+
+    def fn(session):
+        raise AutoReconnect("connection lost")                # network errors are transient: retried until the limit
+    with locks.user_lock(uid):
+        with pytest.raises(locks.LockUnavailable):
+            locks.guarded_write(uid, fn)
+    assert Workspace(uid).load("nothing", None) is None
+
+
+def test_protected_writes_are_refused_without_transaction_support(monkeypatch):
+    uid = _uid()
+    ws = Workspace(uid)
+    monkeypatch.setattr(locks, "transactions_supported", lambda: False)
+    with ws.lock:
+        with pytest.raises(locks.LockUnavailable):
+            ws.save("guarded", {"v": 1})
+    assert ws.load("guarded", None) is None                     # never written unguarded
+    ws.save("plain", {"v": 1})                                  # writes outside the lock are unaffected
+    assert ws.load("plain", None) == {"v": 1}
+
+
+def test_portfolio_address_release_is_a_guarded_write(user, monkeypatch):
+    from features import portfolio
+    c, ws = user["client"], user["ws"]
+    assert c.put("/api/portfolio/settings", json={"slug": "first-addr"}, headers=H).status_code == 200
+    seen = []
+    real = portfolio.guarded_write
+    monkeypatch.setattr(portfolio, "guarded_write", lambda uid, fn: (seen.append((uid, bool(locks.current(uid)))), real(uid, fn))[1])
+    assert c.put("/api/portfolio/settings", json={"slug": "second-addr"}, headers=H).status_code == 200
+    assert seen == [(ws.uid, True)]                             # released inside the account lock's transaction
+    assert not M.site.find_one({"_id": "portfolio-slug:first-addr"})
+    assert M.site.find_one({"_id": "portfolio-slug:second-addr"})["uid"] == ws.uid
+
+
 def test_fencing_rejects_a_stale_write_that_slipped_past_the_lease_check():
     """Even if a stale holder passed its local check just before losing the lease, the database refuses its write."""
     uid = _uid()
