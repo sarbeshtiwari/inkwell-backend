@@ -37,31 +37,36 @@ def save_template(ws):
     item = {"name": v_text(p.get("name"), "name", "Template name", 80, required=True),
             "subject": v_template_text(p.get("subject"), "subject", "Email subject", 200, False),
             "body": v_template_text(p.get("body"), "body", "Message", 5000, True)}
-    with ws.lock:
-        items = ws.load("templates", [])
+    new_id_ = new_id()  # chosen once, so a retried computation creates the same template, not a second one
+    result = {}
+
+    def change(items):  # computed from the latest templates; may run again if another change lands first
         if any(t["name"].lower() == item["name"].lower() and t["id"] != p.get("id") for t in items):
             raise Invalid("You already have a template with this name.", "name")
         existing = next((t for t in items if p.get("id") and t["id"] == p["id"]), None)
         if existing:
             existing.update(item)
-            item = existing
+            result["item"] = existing
         else:
             if len(items) >= 50:
                 raise Invalid("You can keep up to 50 templates. Delete one first.")
-            item["id"] = new_id()
-            items.append(item)
-        ws.save("templates", items)
-    return jsonify(item)
+            items.append({**item, "id": new_id_})
+            result["item"] = items[-1]
+        return items
+
+    ws.update("templates", change, default=[])
+    return jsonify(result["item"])
 
 
 @app.delete("/api/templates/<tid>")
 @login_required
 def delete_template(ws, tid):
-    with ws.lock:
-        items = ws.load("templates", [])
+    def change(items):
         if len(items) <= 1:
             raise Invalid("Keep at least one template.")
-        ws.save("templates", [t for t in items if t["id"] != tid])
+        return [t for t in items if t["id"] != tid]
+
+    ws.update("templates", change, default=[])
     return jsonify(ok=True)
 
 

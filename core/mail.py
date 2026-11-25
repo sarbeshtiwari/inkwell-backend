@@ -83,6 +83,8 @@ def tls_context():
 
 
 def smtp_connect(profile):
+    from core.workspace import forbid_in_update
+    forbid_in_update("Sending mail")
     host, port = profile.get("smtp_host", ""), int(profile.get("smtp_port") or 465)
     if not host or not profile.get("smtp_password"):
         raise RuntimeError("Email isn't set up yet. Add an app password on the Profile page.")
@@ -143,6 +145,8 @@ def imap_host_for(profile):
 
 def imap_connect(profile):
     """Log in to the sender's mailbox over IMAP with the saved app password (used read-only)."""
+    from core.workspace import forbid_in_update
+    forbid_in_update("Mailbox access")
     if not profile.get("smtp_password"):
         raise Invalid("Set up email on the Profile page first.")
     host = public_host(imap_host_for(profile))

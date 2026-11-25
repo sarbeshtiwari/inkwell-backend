@@ -68,7 +68,10 @@ def mac_available():
 # ---------------------------------------------------------------- sending
 
 def notify(uid, title, body="", link="", kind="info"):
-    """Record a notification for one account and fan it out. Never raises."""
+    """Record a notification for one account and fan it out. Never raises (except when misused inside a
+    Workspace.update callback, which may run more than once)."""
+    from core.workspace import forbid_in_update
+    forbid_in_update("Notifications")
     try:
         now = time.time()
         item = {"title": str(title)[:140], "body": str(body)[:400], "link": str(link)[:300], "kind": kind}

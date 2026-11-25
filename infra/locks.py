@@ -474,6 +474,10 @@ class UserLock:
     def __enter__(self):
         """Bounded wait (in-process queue + shared lease) *before* anything protected runs: on timeout, LockTimeout is
         raised to the caller and nothing has been read or written."""
+        from core.workspace import (
+            forbid_in_update,  # (late: workspace imports this module)
+        )
+        forbid_in_update("Taking the account lock")
         start, limit = time.monotonic(), self.wait_limit()
         if not self._local.acquire(timeout=limit):
             _record_wait(self.resource, time.monotonic() - start, "timeout")

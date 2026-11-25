@@ -28,11 +28,11 @@ def _hold_elsewhere(uid):
 
 def test_interactive_request_times_out_at_the_limit_with_retry_after_and_changes_nothing(user, short_waits):
     c, ws = user["client"], user["ws"]
-    before = ws.load("templates", [])
+    before = ws.load("inbox_companies", {})
     lease = _hold_elsewhere(ws.uid)
     try:
         t0 = time.monotonic()
-        r = c.post("/api/templates", json={"name": "Blocked", "body": "Hello {name}, this should not be saved."}, headers=H)
+        r = c.put("/api/inbox/company/a1b2c3d4e5f60718", json={"name": "Blocked"}, headers=H)  # a change made under ws.lock
         took = time.monotonic() - t0
     finally:
         lease.release()
@@ -40,8 +40,7 @@ def test_interactive_request_times_out_at_the_limit_with_retry_after_and_changes
     assert r.get_json() == {"error": locks.UserLock.BUSY, "field": None}      # the existing error shape
     assert 1.0 <= took < 2.5                                                   # the limit, plus at most one attempt
     time.sleep(1.5)                                                            # nothing carries on in the background
-    assert ws.load("templates", []) == before
-    assert not any(t["name"] == "Blocked" for t in ws.load("templates", []))
+    assert ws.load("inbox_companies", {}) == before
 
 
 def test_the_default_interactive_limit_is_18_seconds_and_background_45():
@@ -95,12 +94,12 @@ def test_waiting_behind_another_thread_of_this_process_is_bounded_too(user, shor
     entered.wait(5)
     try:
         t0 = time.monotonic()
-        r = c.post("/api/templates", json={"name": "Queued", "body": "Hello {name}, this waits behind a thread."}, headers=H)
+        r = c.put("/api/inbox/company/a1b2c3d4e5f60718", json={"name": "Queued"}, headers=H)
         assert r.status_code == 409 and 1.0 <= time.monotonic() - t0 < 2.5
     finally:
         release.set()
         t.join(10)
-    assert not any(x["name"] == "Queued" for x in ws.load("templates", []))
+    assert ws.load("inbox_companies", {}).get("a1b2c3d4e5f60718", {}).get("name") != "Queued"
 
 
 def test_account_lock_timeout_is_answered_before_anything_is_read(user, short_waits, monkeypatch):
@@ -110,10 +109,10 @@ def test_account_lock_timeout_is_answered_before_anything_is_read(user, short_wa
     monkeypatch.setattr(Workspace, "load", lambda self, k, d=None: (reads.append(k), real(self, k, d))[1])
     lease = _hold_elsewhere(ws.uid)
     try:
-        r = user["client"].delete("/api/templates/nope", headers=H)
+        r = user["client"].put("/api/inbox/company/a1b2c3d4e5f60718", json={"hidden": True}, headers=H)
     finally:
         lease.release()
-    assert r.status_code == 409 and "templates" not in reads
+    assert r.status_code == 409 and "inbox_companies" not in reads
 
 
 def test_other_409s_keep_no_retry_after(user):
@@ -194,19 +193,18 @@ def test_profile_validation_errors_are_unchanged(user):
 
 
 def test_concurrent_account_changes_lose_nothing(user):
-    """Templates saved from 6 parallel requests while the lock is contended: every one is kept."""
+    """Company names saved from 6 parallel requests while the lock is contended: every one is kept."""
     ws = user["ws"]
     clients = [client_for(ws.uid) for _ in range(6)]
     codes = []
 
     def add(i):
-        codes.append(clients[i].post("/api/templates", json={"name": f"T{i}", "body": f"Hello {{name}}, template number {i}."},
-                                     headers=H).status_code)
+        codes.append(clients[i].put(f"/api/inbox/company/{i:016x}", json={"name": f"T{i}"}, headers=H).status_code)
     threads = [threading.Thread(target=add, args=(i,)) for i in range(6)]
     [t.start() for t in threads]
     [t.join(30) for t in threads]
-    names = {t["name"] for t in ws.load("templates", [])}
-    assert codes == [200] * 6 and {f"T{i}" for i in range(6)} <= names
+    saved = ws.load("inbox_companies", {})
+    assert codes == [200] * 6 and {saved[f"{i:016x}"]["name"] for i in range(6)} == {f"T{i}" for i in range(6)}
 
 
 # ---- measurements ------------------------------------------------------------------------------------------------
@@ -215,11 +213,10 @@ def test_lock_measurements_and_logs_carry_no_account_data(user, short_waits, cap
     locks.reset_metrics()
     ws, c = user["ws"], user["client"]
     caplog.set_level(logging.WARNING, logger="inkwell.locks")
-    assert c.post("/api/templates", json={"name": "M1", "body": "Hello {name}, measured template."}, headers=H).status_code == 200
+    assert c.put("/api/inbox/company/a1b2c3d4e5f60718", json={"name": "M1"}, headers=H).status_code == 200
     lease = _hold_elsewhere(ws.uid)
     try:
-        r = c.post("/api/templates", json={"name": "M2", "body": "Hello {name}, measured template."},
-                   headers={**H, "X-Request-Id": "req-test-123"})
+        r = c.put("/api/inbox/company/a1b2c3d4e5f60718", json={"name": "M2"}, headers={**H, "X-Request-Id": "req-test-123"})
     finally:
         lease.release()
     assert r.status_code == 409

@@ -113,6 +113,34 @@ Deliberately still per process (not coordination state):
 - **Not cancellable part-way:** a single AI-match search and a single company research. They check before starting
   and before saving.
 
+## Versioned records (optimistic concurrency, Stage 2A)
+
+**Which records:** those listed in `core.workspace.VERSIONED_KEYS`; currently `templates`, the pilot. They are changed
+without the account lock.
+
+**How a change is written** (`ws.update(key, fn, default)`):
+1. Read the record and its `version`.
+2. Compute `fn(fresh copy)`.
+3. Write with `update_one({_id, version: v}, {$set: ..., $inc: {version: 1}})`. If the version moved, re-read and
+   compute again (up to 5 attempts, with jitter).
+4. After that, answer **409** with `Retry-After: 2`, having written nothing.
+
+**Versions and creation:**
+- A missing `version` field (records written before versioning, or rewritten by an older release) counts as 0.
+- `null`, a non-integer, `true`/`false` or a negative number is refused (500), never taken as 0.
+- A missing record is created with an insert; a duplicate key (created concurrently) is retried as an update.
+- `ws.create` writes only if missing. `ws.replace_versioned(..., expected_version=)` refuses a stale form.
+
+**Rules for `fn`:** it must only compute.
+- Network calls, mail, notifications, other writes and taking the account lock all raise inside it, because it may
+  run more than once.
+- Errors it raises propagate, and nothing is written.
+
+**Coverage is enforced twice:** `ws.save` refuses versioned keys, and a code-scan test fails on any other write path.
+
+**Rollback:** the previous release rewrites the whole record without `version`. The next versioned write treats that
+as version 0, so it's safe either way.
+
 ## Recurring jobs (`schedules` collection)
 `schedules` holds one document per job (`g:<name>`) or per account and job (`u:<uid>:<name>`): `next_at`, `last_at`.
 

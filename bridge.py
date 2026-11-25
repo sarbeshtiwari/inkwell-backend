@@ -30,6 +30,8 @@ def login_required(fn):
 
 def http(method, url, *, token=None, timeout=30, **kw):
     """requests wrapper with a sensible timeout and a clear error for network failures."""
+    from core.workspace import forbid_in_update
+    forbid_in_update("Network access")
     headers = kw.pop("headers", {})
     if token:
         headers["Authorization"] = f"Bearer {token}"
