@@ -63,7 +63,7 @@ MAX_FILE_MB = 10                                                # per uploaded f
 MAX_FILES = 20
 
 
-ALLOWED_DOCS = {"pdf", "doc", "docx", "odt", "rtf", "txt", "xls", "xlsx", "csv", "ppt", "pptx",
+ALLOWED_DOCS = {"pdf", "doc", "docx", "odt", "rtf", "txt", "tex", "xls", "xlsx", "csv", "ppt", "pptx",
                 "png", "jpg", "jpeg", "webp", "gif"}
 
 

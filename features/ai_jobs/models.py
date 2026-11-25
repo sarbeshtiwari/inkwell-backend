@@ -14,9 +14,12 @@ import requests
 from flask import jsonify
 from bridge import login_required
 
+from features.ai_jobs import cli_llm
 from features.ai_jobs.common import C, OLLAMA_MODEL, OLLAMA_URL, bp
 
 PROVIDERS = {  # id: (label, OpenAI-compatible base URL, suggested model, key page)
+    "claude_cli": ("Claude Code (your plan, on this computer)", "", "", "https://claude.com/claude-code"),
+    "kiro_cli": ("Kiro CLI (your plan, on this computer)", "", "", "https://kiro.dev"),
     "ollama": ("Ollama (on this computer)", "", OLLAMA_MODEL, "https://ollama.com/download"),
     "anthropic": ("Claude (Anthropic)", "https://api.anthropic.com/v1", "claude-sonnet-5-5", "https://console.anthropic.com/settings/keys"),
     "openai": ("OpenAI", "https://api.openai.com/v1", "", "https://platform.openai.com/api-keys"),
@@ -44,10 +47,25 @@ def local_allowed():
     return not C().PRODUCTION
 
 
+def cli_ready(pid):
+    return local_allowed() and cli_llm.available(pid)
+
+
+def default_provider():
+    """Claude Code when Reachout runs on a computer that has it, otherwise the local Ollama model."""
+    return "claude_cli" if cli_ready("claude_cli") else "ollama"
+
+
 def config(ws):
     """The user's model settings, with the key, or None when no model is usable right now."""
     s = ws.load("ai_model", {}) or {}
-    pid = s.get("provider") or "ollama"
+    pid = s.get("provider") or default_provider()
+    if pid in cli_llm.TOOLS:
+        if not cli_ready(pid):
+            pid = "ollama"  # e.g. on the hosted service: fall back to the free local model
+        else:
+            model = s.get("model", "")
+            return {"provider": pid, "model": model, "local": True, "label": f"{PROVIDERS[pid][0].split(' (')[0]}{' · ' + model if model else ''}"}
     if pid == "ollama" or pid not in PROVIDERS:
         return {"provider": "ollama", "model": OLLAMA_MODEL, "label": f"{OLLAMA_MODEL} (local)", "local": True} if ollama_up() else None
     key = (ws.load("ai_keys", {}) or {}).get("llm_" + pid, "")
@@ -96,8 +114,11 @@ def first_json(text):
     raise ValueError("The model didn't answer with JSON.")
 
 
-def chat(cfg, system, human, as_json=False, max_tokens=700, temperature=0.2):
-    """One system + user turn on the configured model. Returns text, or a dict when as_json."""
+def chat(cfg, system, human, as_json=False, max_tokens=700, temperature=0.2, web=False, timeout=90):
+    """One system + user turn on the configured model. Returns text, or a dict when as_json.
+    web=True lets Claude Code / Kiro search the web (other providers ignore it)."""
+    if cfg["provider"] in cli_llm.TOOLS:
+        return cli_llm.ask(cfg["provider"], system, human, as_json, web, timeout, cfg.get("model", ""))
     if cfg["provider"] == "ollama":
         from langchain_ollama import ChatOllama
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -139,11 +160,12 @@ def public(ws):
     s = ws.load("ai_model", {}) or {}
     keys = ws.load("ai_keys", {}) or {}
     cfg = config(ws)
-    return {"provider": s.get("provider") or "ollama", "model": s.get("model", ""), "base_url": s.get("base_url", ""),
+    return {"provider": s.get("provider") or default_provider(), "model": s.get("model", ""), "base_url": s.get("base_url", ""),
             "ready": bool(cfg), "label": cfg["label"] if cfg else "", "ollama_up": ollama_up(), "local_allowed": local_allowed(),
-            "keys": {p: bool(keys.get("llm_" + p)) for p in PROVIDERS if p not in ("ollama", "local")},
-            "providers": [{"id": k, "label": v[0], "suggested": v[2], "key_url": v[3]} for k, v in PROVIDERS.items()
-                          if k != "local" or local_allowed()]}
+            "keys": {p: bool(keys.get("llm_" + p)) for p in PROVIDERS if p not in ("ollama", "local", *cli_llm.TOOLS)},
+            "cli": {p: cli_ready(p) for p in cli_llm.TOOLS},
+            "providers": [{"id": k, "label": v[0], "suggested": v[2], "key_url": v[3], "keyless": k in ("ollama", "local", *cli_llm.TOOLS)}
+                          for k, v in PROVIDERS.items() if (k != "local" or local_allowed()) and (k not in cli_llm.TOOLS or cli_ready(k))]}
 
 
 @bp.get("/api/ai-jobs/model")
@@ -158,7 +180,7 @@ def put_model(ws):
     core = C()
     p = core.body()
     pid = str(p.get("provider") or "ollama")
-    if pid not in PROVIDERS or (pid == "local" and not local_allowed()):
+    if pid not in PROVIDERS or (pid == "local" and not local_allowed()) or (pid in cli_llm.TOOLS and not cli_ready(pid)):
         raise core.Invalid("Pick one of the listed providers.", "provider")
     model = core.v_text(p.get("model"), "model", "Model", 120)
     if model and not re.fullmatch(r"[\w.:/@+-]{1,120}", model):
@@ -167,7 +189,7 @@ def put_model(ws):
     if base and not re.fullmatch(r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d{2,5})?(/[\w./-]*)?", base):
         raise core.Invalid("Use a server on this computer, like http://localhost:1234/v1.", "base_url")
     with ws.lock:
-        if "key" in p and pid not in ("ollama", "local"):
+        if "key" in p and pid not in ("ollama", "local", *cli_llm.TOOLS):
             key = str(p.get("key") or "").strip()
             if key and not re.fullmatch(r"[\w\-.:]{10,300}", key):
                 raise core.Invalid("That doesn't look like an API key.", "key")
@@ -199,8 +221,12 @@ def test_model(ws):
 def list_models(ws):
     """Model names the provider offers (OpenAI-compatible /models), to pick from."""
     s = ws.load("ai_model", {}) or {}
-    pid = s.get("provider") or "ollama"
+    pid = s.get("provider") or default_provider()
     key = (ws.load("ai_keys", {}) or {}).get("llm_" + pid, "")
+    if pid == "claude_cli":
+        return jsonify(models=["sonnet", "opus", "haiku"])
+    if pid == "kiro_cli":
+        return jsonify(models=[])
     if pid == "ollama":
         try:
             names = [m["name"] for m in requests.get(OLLAMA_URL + "/api/tags", timeout=3).json().get("models", [])]

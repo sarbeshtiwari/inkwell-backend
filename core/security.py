@@ -153,7 +153,7 @@ def security_headers(resp):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+    resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(self), payment=(), usb=()")
     resp.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
     if SECURE_COOKIES or request.is_secure:
         resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")

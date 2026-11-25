@@ -18,7 +18,7 @@ ACCOUNT_SITES = re.compile(r"myworkdayjobs\.com|myworkdaysite\.com|successfactor
                            r"avature\.net|eightfold\.ai|csod\.com|\.adp\.com|peoplesoft|brassring|kenexa|ultipro|paylocity|"
                            r"workforcenow|jobs\.sap\.com|careers\.google\.com|amazon\.jobs|jobs\.apple\.com", re.I)
 # Sites Reachout never applies on (logins it won't handle, or job sites with their own rules on automation).
-NEVER = re.compile(r"linkedin\.com|naukri\.com|indeed\.|glassdoor\.|monster\.|foundit\.|instahyre\.|wellfound\.com|angel\.co", re.I)
+NEVER = re.compile(r"linkedin\.com|naukri\.com|indeed\.|glassdoor\.|monster\.|foundit\.|instahyre\.|wellfound\.com|angel\.co|hirist\.|cutshort\.io|ycombinator\.com", re.I)
 APPLY_TEXT = re.compile(r"^\W*(apply|apply now|apply here|apply online|apply for (this|the) (job|position|role|opening)|"
                         r"apply to (this|the) (job|position|role)|easy apply|quick apply|i'?m interested|start (your )?application|"
                         r"submit (your )?(application|cv|resume)|bewerben|jetzt bewerben|postuler|postular|candidatar(-se)?|"

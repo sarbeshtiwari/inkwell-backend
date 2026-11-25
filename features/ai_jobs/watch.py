@@ -88,7 +88,7 @@ class Watch:
             except Exception:
                 pass
             page.wait_for_timeout(1000)
-            if int(time.time()) % 4 == 0:
+            if int(time.time()) % 2 == 0:  # keep the live view in Reachout close to what the browser shows
                 live(page, "")
         return "timeout"
 

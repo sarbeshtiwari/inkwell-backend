@@ -82,6 +82,7 @@ def anon():
 
 @pytest.fixture(autouse=True)
 def _no_local_model(monkeypatch):
-    """Tests never call the local AI model (Ollama), even when one runs on this computer."""
-    from features.ai_jobs import models
+    """Tests never call the local AI model (Ollama) or Claude Code / Kiro, even when they're on this computer."""
+    from features.ai_jobs import cli_llm, models
     monkeypatch.setattr(models, "ollama_up", lambda: False)
+    monkeypatch.setattr(cli_llm, "available", lambda pid: False)

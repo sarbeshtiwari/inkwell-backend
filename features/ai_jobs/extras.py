@@ -19,6 +19,7 @@ from bridge import login_required
 
 from features.ai_jobs.common import C, J, bp
 from features.ai_jobs import models, signals
+from features.ai_jobs import tailor_rules as R
 from features.ai_jobs.evaluate import GUARD, find_job, job_text, llm, render_pdf, resume_for, resume_lines
 from features.ai_jobs.ranking import cosine, tokens
 
@@ -66,33 +67,12 @@ def tailor(ws, job):
     ranked = sorted(lines, key=lambda l: -cosine(tokens(l), jt, {}))
     out = {"summary": "", "skills": kw["covered"] + [s for s in J().skill_hits(original, J().SKILLS) if s not in kw["covered"] and s not in ("C", "R")],
            "highlights": ranked[:6], "sections": [], "dropped": [], "engine": "Reachout AI"}
-    cfg = models.config(ws)
+    cfg = models.config(ws) if original.strip() else None
     if cfg:
         with models.use(cfg):
             try:
-                r = llm(GUARD + " Tailor this resume to the job. Answer only JSON: {{\"summary\": \"2-3 sentences\", \"skills\": "
-                        "[skills from the resume, most relevant first], \"sections\": [{{\"heading\": \"Experience\" | \"Projects\" | "
-                        "\"Education\" | ..., \"items\": [{{\"title\": \"role or project\", \"org\": \"company/school\", \"dates\": \"...\", "
-                        "\"bullets\": [\"...\"]}}]}}]}}. Keep every fact exactly as in the resume (titles, employers, dates, numbers); you may "
-                        "reorder and reword bullets to stress what the job needs. Never add a skill, tool, metric or project.",
-                        "Resume:\n{resume}\n\nJob: {title} at {company}\nPosting (excerpt):\n{jd}",
-                        {"resume": original[:6000], "title": job["title"], "company": job["company"], "jd": jd[:2500]}, tokens_out=2200)
+                ordered(ws, cfg, original, job, jd, out)
                 out["engine"] = f"Reachout AI + {cfg['label']}"
-                summary = str(r.get("summary") or "")
-                if not fact_check(summary, original):
-                    out["summary"] = summary
-                skills = [s for s in r.get("skills", []) if isinstance(s, str) and s.lower() in original.lower()]
-                out["skills"] = list(dict.fromkeys(skills + out["skills"]))[:24]
-                for sec in r.get("sections", []) if isinstance(r.get("sections"), list) else []:
-                    items = []
-                    for it in sec.get("items", []) if isinstance(sec, dict) else []:
-                        kept, dropped = clean_bullets(it.get("bullets", []), original)
-                        out["dropped"] += dropped
-                        if kept or it.get("title"):
-                            items.append({"title": str(it.get("title", ""))[:120], "org": str(it.get("org", ""))[:120],
-                                          "dates": str(it.get("dates", ""))[:60], "bullets": kept[:8]})
-                    if items:
-                        out["sections"].append({"heading": str(sec.get("heading", ""))[:40], "items": items})
             except Exception as e:
                 print(f"[Reachout] tailored resume model step skipped: {e!r}", flush=True)
     if not out["summary"]:
@@ -105,13 +85,86 @@ def tailor(ws, job):
     return out
 
 
+def resume_structure(ws, cfg, original):
+    """The resume split into summary, skill groups and roles, every piece copied word for word from the resume text.
+    Pieces that aren't in the resume are dropped. Cached per resume, since the resume rarely changes."""
+    import hashlib
+    key = hashlib.sha256(original.encode()).hexdigest()[:16]
+    cache = ws.load("ai_resume_struct", {}) or {}
+    if cache.get("key") == key:
+        return cache["data"]
+    r = models.chat(cfg, GUARD + " You split a resume into parts. Copy text EXACTLY as written; never rephrase, fix or add.",
+                    "Resume:\n" + original[:9000] + '\n\nReturn JSON {"summary": "<the summary paragraph, verbatim, or empty>", '
+                    '"skills": [{"category": "<as written>", "items": ["<each skill verbatim>"]}], "sections": [{"heading": '
+                    '"Experience|Projects|Education|...", "items": [{"title": "<verbatim>", "org": "<verbatim>", "dates": "<verbatim>", '
+                    '"bullets": ["<each bullet verbatim, in order>"]}]}]}', as_json=True, max_tokens=4000, timeout=300)
+    of = R.flat(original)
+    data = {"summary": str(r.get("summary") or "") if R.verbatim(r.get("summary") or "", of) else "", "skills": [], "sections": []}
+    for g in r.get("skills") or []:
+        items = [str(i) for i in (g.get("items") or []) if isinstance(i, str) and R.verbatim(i, of)] if isinstance(g, dict) else []
+        if items:
+            data["skills"].append([str(g.get("category") or "Skills")[:80], list(dict.fromkeys(items))])
+    for sec in r.get("sections") or []:
+        items = []
+        for it in (sec.get("items") or []) if isinstance(sec, dict) else []:
+            bullets = [str(b).strip(" -•*") for b in it.get("bullets") or [] if isinstance(b, str) and R.verbatim(b, of)]
+            fields = {k: str(it.get(k) or "")[:120] for k in ("title", "org", "dates")}
+            if bullets or fields["title"]:
+                items.append({**{k: v if R.verbatim(v, of) else "" for k, v in fields.items()}, "bullets": bullets})
+        if items:
+            data["sections"].append({"heading": str(sec.get("heading") or "")[:40], "items": items})
+    ws.save("ai_resume_struct", {"key": key, "data": data})
+    return data
+
+
+def propose(cfg, job, jd, listing):
+    """The AI's proposed order for a resume (and its read of what the job needs). Checked by tailor_rules after."""
+    return models.chat(cfg, GUARD + " You tailor a resume by ORDER only: you may reorder skills within a category and bullets within a "
+                       "role, and rewrite the summary using only words, tools and numbers already in the resume.",
+                       f"Job: {job['title']} at {job['company']}\nPosting:\n{jd[:3000]}\n\nResume parts:\n{listing}\n\nReturn JSON "
+                       '{"requirements": [{"need": "<what the job needs>", "match": "direct|transferable|adjacent|gap"}], '
+                       '"summary": "<rewritten summary>", "skills": {"<category>": ["<same items, best first>"]}, '
+                       '"bullets": [[<bullet indexes of role 0, best first>], [<role 1>], ...], "notes": ["<why this order, short>"]}',
+                       as_json=True, max_tokens=2500, timeout=300)
+
+
+def analysis_of(r):
+    return [{"need": str(q.get("need", ""))[:160], "match": q.get("match") if q.get("match") in ("direct", "transferable", "adjacent", "gap")
+             else "gap"} for q in (r.get("requirements") or []) if isinstance(q, dict)][:12]
+
+
+def ordered(ws, cfg, original, job, jd, out):
+    """Morrow's tailoring: the AI proposes an order (and may rewrite the summary); tailor_rules accepts only pure
+    reorderings and a summary grounded in the resume. Fills out[summary, skills, sections, notes, analysis]."""
+    base = resume_structure(ws, cfg, original)
+    roles = [(si, ii, it) for si, sec in enumerate(base["sections"]) for ii, it in enumerate(sec["items"])]
+    listing = {"summary": base["summary"], "skills": {c: items for c, items in base["skills"]},
+               "roles": [{"index": n, "role": f"{it['title']} {it['org']}".strip(), "bullets": list(enumerate(it["bullets"]))}
+                         for n, (_, _, it) in enumerate(roles)]}
+    r = propose(cfg, job, jd, listing)
+    terms = R.terms(original)
+    notes = [str(n)[:200] for n in (r.get("notes") or []) if isinstance(n, str)][:6]
+    skills, n1 = R.accept_skills(base["skills"], r.get("skills"))
+    bullets, n2 = R.accept_bullets([it["bullets"] for _, _, it in roles], [f"{it['title']} {it['org']}".strip() for _, _, it in roles],
+                                   r.get("bullets"))
+    summary, n3 = R.accept_text("Summary", r.get("summary"), base["summary"], R.summary_bounds(base["summary"]), terms)
+    sections = [{"heading": sec["heading"], "items": [dict(it) for it in sec["items"]]} for sec in base["sections"]]
+    for (si, ii, _), bl in zip(roles, bullets):
+        sections[si]["items"][ii]["bullets"] = bl
+    out.update(summary=summary, sections=sections, notes=notes, checks=n1 + n2 + n3, skill_groups=skills,
+               skills=[i for _, items in skills for i in items] or out["skills"],
+               analysis=analysis_of(r))
+
+
 def resume_html(ws, t):
     prof, extra = ws.profile(), ws.load("ai_apply_profile", {}) or {}
     e = html.escape
     contact = " · ".join(e(x) for x in [prof.get("email", ""), prof.get("phone", ""), extra.get("location", ""), extra.get("linkedin", ""),
                                          extra.get("github", ""), extra.get("portfolio", "")] if x)
     parts = [f"<h1>{e(prof.get('name', ''))}</h1><p class=c>{contact}</p>", f"<h2>Summary</h2><p>{e(t['summary'])}</p>"]
-    if t["skills"]:
+    if t.get("skill_groups"):
+        parts.append("<h2>Skills</h2>" + "".join(f"<p><b>{e(c)}:</b> {e(', '.join(items))}</p>" for c, items in t["skill_groups"]))
+    elif t["skills"]:
         parts.append(f"<h2>Skills</h2><p>{e(', '.join(t['skills']))}</p>")
     if t["sections"]:
         for sec in t["sections"]:
@@ -130,6 +183,60 @@ def resume_html(ws, t):
     return f"<html><head><meta charset='utf-8'><style>{css}</style></head><body>{''.join(parts)}</body></html>"
 
 
+def tex_resume(ws):
+    """The user's own LaTeX resume in Files (the first .tex that isn't a cover letter), or ""."""
+    for d in ws.documents():
+        name = d["name"] if isinstance(d, dict) else d
+        if name.lower().endswith(".tex") and "cover" not in name.lower():
+            data = ws.doc_bytes(name)
+            if data:
+                return data.decode("utf-8", "replace")
+    return ""
+
+
+def latex_resume(ws, job, t):
+    """The tailored resume typeset with LaTeX (Morrow's way), or None to use the HTML one. With your own .tex the AI's
+    order is applied to it under the reorder-only rules; otherwise Morrow's template is filled from your resume's
+    parts. A tailored version that runs longer than the original gets the original summary back, then gives up."""
+    from features.ai_jobs import latex
+    if not latex.available():
+        return None
+    prof, extra = ws.profile(), ws.load("ai_apply_profile", {}) or {}
+    try:
+        base_tex = tex_resume(ws)
+        if base_tex:
+            cfg = models.config(ws)
+            s = latex.parse(base_tex)
+            r = {}
+            if cfg:
+                with models.use(cfg):
+                    r = propose(cfg, job, job_text(ws, job), latex.latex_listing(s, base_tex))
+            tex, checks, _ = latex.tailor_tex(base_tex, r, R.terms(latex.plain(base_tex)))
+            t["checks"] = checks + [c for c in t.get("checks", []) if not c.startswith(("Skills", "Bullets", "Summary"))]
+            t["notes"] = [str(n)[:200] for n in (r.get("notes") or []) if isinstance(n, str)][:6] or t.get("notes", [])
+            t["analysis"] = analysis_of(r) or t.get("analysis", [])
+            longer_tex = latex.render(base_tex, {**latex.parse(tex), "summary": s["summary"]})
+        else:
+            if not t.get("sections"):
+                return None
+            tex = latex.from_parts(prof, extra, t)
+            base = (ws.load("ai_resume_struct", {}) or {}).get("data") or {}
+            base_tex = latex.from_parts(prof, extra, {**base, "skill_groups": base.get("skills"), "skills": []}) if base.get("sections") else tex
+            longer_tex = latex.from_parts(prof, extra, {**t, "summary": base.get("summary", t.get("summary", ""))})
+        pdf = latex.compile_pdf(tex)
+        limit = latex.page_count(latex.compile_pdf(base_tex)) if base_tex != tex else latex.page_count(pdf)
+        if latex.page_count(pdf) > limit:
+            pdf = latex.compile_pdf(longer_tex)
+            t.setdefault("checks", []).append("Summary: the tailored version ran longer than your resume, so the original summary was kept.")
+            if latex.page_count(pdf) > limit:
+                return None
+        return pdf
+    except Exception as e:
+        print(f"[Reachout] LaTeX resume skipped, using the HTML one: {e}", flush=True)
+        t.setdefault("checks", []).append(f"LaTeX: {str(e).splitlines()[0][:200]} The HTML resume was used instead.")
+        return None
+
+
 @bp.post("/api/ai-jobs/resume/<jid>")
 @login_required
 def make_resume(ws, jid):
@@ -138,8 +245,9 @@ def make_resume(ws, jid):
         raise core.Invalid("You've made 40 tailored resumes today. Try again tomorrow.", status=429)
     job = find_job(ws, jid)
     t = tailor(ws, job)
-    page = resume_html(ws, t)
-    pdf = render_pdf_html(page)
+    pdf, fmt = latex_resume(ws, job, t), "LaTeX"
+    if not pdf:
+        pdf, fmt = render_pdf_html(resume_html(ws, t)), "HTML"
     if not pdf:
         raise core.Invalid("Couldn't make the PDF (the browser isn't available).", status=500)
     name = re.sub(r"[^\w .&-]", "", f"Resume - {job['company']} - {job['title']}")[:90].strip() + ".pdf"
@@ -147,7 +255,8 @@ def make_resume(ws, jid):
     with ws.lock:
         rows = ws.load("ai_resumes", {}) or {}
         rows[jid] = {"doc": name, "use": rows.get(jid, {}).get("use", False), "at": time.time(), "dropped": t["dropped"][:20],
-                     "engine": t["engine"], "keywords": t["keywords"]["percent"]}
+                     "engine": t["engine"], "keywords": t["keywords"]["percent"], "notes": t.get("notes", []),
+                     "checks": t.get("checks", []), "analysis": t.get("analysis", []), "format": fmt}
         ws.save("ai_resumes", rows)
     return jsonify(resume=rows[jid], summary=t["summary"], skills=t["skills"])
 

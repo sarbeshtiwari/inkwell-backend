@@ -140,7 +140,7 @@ def upload_documents(ws):
         name = secure_filename(f.filename) or "document"
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         if ext not in ALLOWED_DOCS:
-            raise Invalid(f"“{f.filename}” isn't a supported file type. Use PDF, Word, Excel, PowerPoint, "
+            raise Invalid(f"“{f.filename}” isn't a supported file type. Use PDF, Word, Excel, PowerPoint, LaTeX, "
                           f"text or image files.", "files")
         data = f.read()
         if not data:

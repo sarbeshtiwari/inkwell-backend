@@ -250,14 +250,22 @@ def commit(ws, owner, repo):
         if clash:
             raise C().Invalid("Someone pushed changes to " + ", ".join(clash[:5]) + " since you opened them. "
                               "Pull the latest version first (your edits stay in the editor).", "conflict", 409)
-    new_commit = push_tree(ws, base, head, branch, message, tree_items)
+    author = noreply_author(ws) if p.get("private_email") else None
+    new_commit = push_tree(ws, base, head, branch, message, tree_items, author)
     return jsonify(ok=True, sha=new_commit["sha"], url=new_commit.get("html_url"), files=len(tree_items))
 
 
-def push_tree(ws, base, head, branch, message, tree_items):
+def noreply_author(ws):
+    """The user's name with their private GitHub address (<id>+<login>@users.noreply.github.com)."""
+    u = gh(ws, "GET", "/user")
+    return {"name": u.get("name") or u["login"], "email": f"{u['id']}+{u['login']}@users.noreply.github.com"}
+
+
+def push_tree(ws, base, head, branch, message, tree_items, author=None):
     parent = gh(ws, "GET", f"{base}/git/commits/{head}")
     new_tree = gh(ws, "POST", f"{base}/git/trees", json={"base_tree": parent["tree"]["sha"], "tree": tree_items})
-    new_commit = gh(ws, "POST", f"{base}/git/commits", json={"message": message, "tree": new_tree["sha"], "parents": [head]})
+    new_commit = gh(ws, "POST", f"{base}/git/commits", json={"message": message, "tree": new_tree["sha"], "parents": [head],
+                                                             **({"author": author, "committer": author} if author else {})})
     gh(ws, "PATCH", f"{base}/git/refs/heads/{quote(branch, safe='/')}", json={"sha": new_commit["sha"]})
     return new_commit
 
@@ -357,10 +365,15 @@ def create_pull(ws, owner, repo):
     if not title:
         raise C().Invalid("Give the pull request a title.", "title")
     head, base_branch = clean_branch(p.get("head"), "head"), clean_branch(p.get("base"), "base")
-    if head == base_branch:
+    head_owner = str(p.get("head_owner") or "").strip()
+    if head_owner and not NAME_RE.match(head_owner):
+        raise C().Invalid("Invalid fork owner.", "head_owner")
+    if head == base_branch and not head_owner:
         raise C().Invalid("Choose two different branches.", "head")
     pr = gh(ws, "POST", f"{repo_path(owner, repo)}/pulls",
-            json={"title": title[:250], "head": head, "base": base_branch, "body": str(p.get("body") or "")[:20000]})
+            json={"title": title[:250], "head": f"{head_owner}:{head}" if head_owner else head, "base": base_branch,
+                  "body": str(p.get("body") or "")[:20000], "draft": bool(p.get("draft")),
+                  "maintainer_can_modify": True})
     return jsonify(slim_pr(pr))
 
 
@@ -397,3 +410,82 @@ def markdown(ws):
     if r.status_code != 200:
         raise C().Invalid("GitHub couldn't render this Markdown.")
     return jsonify(html=r.text)
+
+
+# --- contributing to other people's repositories: forks, issues and comments ---------------------------------------
+
+@bp.post("/api/gh/fork/<owner>/<repo>")
+@login_required
+def fork(ws, owner, repo):
+    """Fork a repository to the user's account (or reuse the fork they already have) and bring it up to date."""
+    import time
+    base = repo_path(owner, repo)
+    me = gh(ws, "GET", "/user")["login"]
+    try:
+        mine = gh(ws, "GET", repo_path(me, repo))
+        if (mine.get("parent") or {}).get("full_name", "").lower() != f"{owner}/{repo}".lower():
+            mine = None
+    except C().Invalid:
+        mine = None
+    if not mine:
+        mine = gh(ws, "POST", f"{base}/forks", ok=(200, 202), json={"default_branch_only": True})
+        for _ in range(20):  # GitHub creates forks in the background
+            try:
+                gh(ws, "GET", f"{repo_path(me, mine['name'])}/branches/{quote(mine['default_branch'], safe='/')}")
+                break
+            except C().Invalid:
+                time.sleep(2)
+    else:
+        try:
+            gh(ws, "POST", f"{repo_path(me, mine['name'])}/merge-upstream", json={"branch": mine["default_branch"]})
+        except C().Invalid:
+            pass  # the fork's branch has diverged; leave it as it is
+    return jsonify(owner=me, repo=mine["name"], default_branch=mine["default_branch"], url=mine["html_url"])
+
+
+def slim_issue(i):
+    return {"number": i["number"], "title": i["title"], "state": i["state"], "user": i["user"]["login"], "url": i["html_url"],
+            "body": i.get("body") or "", "labels": [x["name"] for x in i.get("labels", [])],
+            "assignees": [a["login"] for a in i.get("assignees", [])], "comments": i.get("comments", 0)}
+
+
+@bp.get("/api/gh/issue/<owner>/<repo>/<int:number>")
+@login_required
+def issue(ws, owner, repo, number):
+    base = repo_path(owner, repo)
+    i = gh(ws, "GET", f"{base}/issues/{number}")
+    cs = gh(ws, "GET", f"{base}/issues/{number}/comments", params={"per_page": 100})
+    return jsonify(**slim_issue(i), thread=[{"user": c["user"]["login"], "at": c["created_at"], "body": c["body"], "url": c["html_url"]} for c in cs])
+
+
+@bp.post("/api/gh/issue/<owner>/<repo>/<int:number>/comments")
+@login_required
+def comment(ws, owner, repo, number):
+    text = str(body().get("body") or "").strip()
+    if not text:
+        raise C().Invalid("Write the comment first.", "body")
+    c = gh(ws, "POST", f"{repo_path(owner, repo)}/issues/{number}/comments", json={"body": text[:20000]})
+    return jsonify(url=c["html_url"], id=c["id"])
+
+
+@bp.get("/api/gh/issues/<owner>/<repo>")
+@login_required
+def list_issues(ws, owner, repo):
+    state = request.args.get("state", "open")
+    if state not in ("open", "closed", "all"):
+        state = "open"
+    rows = gh(ws, "GET", f"{repo_path(owner, repo)}/issues", params={"state": state, "per_page": 100})
+    return jsonify(issues=[slim_issue(i) for i in rows if "pull_request" not in i])
+
+
+@bp.post("/api/gh/issues/<owner>/<repo>")
+@login_required
+def create_issue(ws, owner, repo):
+    p = body()
+    title = str(p.get("title") or "").strip()
+    if not title:
+        raise C().Invalid("Give the issue a title.", "title")
+    labels = [str(x)[:50] for x in (p.get("labels") or [])][:10]
+    i = gh(ws, "POST", f"{repo_path(owner, repo)}/issues", json={"title": title[:250], "body": str(p.get("body") or "")[:30000],
+                                                                  **({"labels": labels} if labels else {})})
+    return jsonify(slim_issue(i))
