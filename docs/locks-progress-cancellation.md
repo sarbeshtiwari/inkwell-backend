@@ -166,31 +166,53 @@ inserts, the other gets a duplicate key and computes again.
 
 ## Deploying versioned records (no overlap)
 
-Do this for the first deploy of versioned records, and for any move forward after a rollback.
+**Why overlap matters:** an old release (`8b59986` and earlier) has no shared locks and no version checks. If it runs at
+the same time as a new release against the same database, its writes can overwrite newer data. That applies to *any*
+account record, not only versioned ones. During Render's normal zero-downtime deploy the old instance keeps running for
+about 60 s after traffic switches, plus up to 30 s of shutdown time. It gets no new requests in that window, but its
+background loops (send queue, mail sync, bounce and reply checks) keep writing.
 
-1. **Suspend** the Render service: Dashboard → service → *Suspend Service*. Netlify then gets errors from the API and
-   the app shows "Can't reach the server"; plan a quiet time.
-2. **Verify** that no old instance is still running:
-   - Render shows the service *Suspended*, with no running instance under *Events*.
-   - `curl -s -o /dev/null -w "%{http_code}" https://<service>.onrender.com/healthz` does not return 200.
-   - In MongoDB, no lock lease or `loop:*` lease is being renewed: wait at least `LOCK_LEASE_SECONDS` (30 s).
-3. **Deploy** the new commit, with the service still suspended (manual deploy of that commit).
-4. **Resume** the service and check health:
-   - `/healthz` returns 200;
-   - signing in works;
-   - a template save returns 200;
-   - the saved record in MongoDB has an integer `version` ≥ the server time in ms, and a 32-character hex `wid`;
-   - the Render logs show no `VersionCorrupt` or `ALERT` lines.
-5. **Traffic** returns automatically with the resume; watch the logs for 10 minutes.
+**"Suspend, deploy while suspended, resume" does not work on Render** (checked against Render's docs, 2026-11):
+- **Deploying a suspended service fails:** a deploy hook returns **409** "The service is suspended". Nothing in the
+  docs says a dashboard deploy works while suspended.
+- **Resuming brings back the last deploy** (the old release). The new commit would then be a normal zero-downtime
+  deploy, which overlaps.
+- **The overlap can't be switched off with a setting:** "All service types redeploy with zero downtime, unless they
+  attach a persistent disk."
 
-**Rollback:**
-1. Suspend.
-2. Verify as above.
-3. Deploy the previous commit.
-4. Resume.
+**Executable procedure: a temporary persistent disk.** Render's docs say that with a disk, "Render stops the existing
+instance *before* bringing up the new instance", "a necessary safeguard to prevent data corruption". The service is
+unavailable for a few seconds. Requirements: a paid plan (the service is on `starter`), a single instance (it is
+already one), and a small disk the app doesn't use.
 
-The old release ignores `version` and `wid` and drops them on its next write of each record. Nothing needs migrating.
-To move forward again later, use the same no-overlap procedure.
+1. **Before:** tell users about a few seconds of downtime, and don't run any restore or copy tool against the
+   database.
+2. **Add a disk** to the service (Dashboard → Disks → mount path `/var/inkwell-deploy-guard`, 1 GB), on the currently
+   deployed commit. Render redeploys the *same* release, stop-then-start, so there is no mixed-release risk.
+   - **Check:** the deploy shows a brief outage, and `/healthz` returns 200 afterwards.
+3. **Deploy the new commit** (manual deploy, or push with auto-deploy). With the disk attached, the old instance stops
+   before the new one starts.
+4. **Verify:**
+   - `/healthz` returns 200 and sign-in works;
+   - the Render deploy shows the new commit;
+   - a template save returns 200, and its record has an integer `version` of at least the server time in ms and a
+     32-character hex `wid`;
+   - the logs show no `VersionCorrupt` or `ALERT` lines.
+5. **Keep the disk attached** while versioned records exist. Every deploy then stays no-overlap, including rollbacks
+   and moves forward. Remove it only once no rollback to an unversioned release is possible. Removing it triggers a
+   zero-downtime redeploy of the *same* release, which is safe.
+
+**Rollback (disk still attached):** deploy **`8b59986`**. It ignores and drops `version`/`wid`, and nothing needs
+migrating. **Never roll back to `1d544b7` or `5c21025`:** they refuse records written by `5ba9022` (they don't accept
+the Int64 versions). That fails closed, with HTTP 500 on those records, but it is an outage. Moving forward again is a
+normal deploy with the disk attached.
+
+**Alternative without a disk (not recommended):** create a second Render service on the new commit, suspend the old
+service, check it has stopped, resume the new service, and point the Netlify proxies at the new service URL. That
+changes `netlify.toml` in the frontend and web repositories, and leaves a window where the API is unreachable.
+
+**Restores and copy tools** (`mongorestore`, Atlas restores, `migrate_to_live.py`) write stored bytes unchanged and
+bypass every check. Never run them while the app is running.
 
 ## Recurring jobs (`schedules` collection)
 `schedules` holds one document per job (`g:<name>`) or per account and job (`u:<uid>:<name>`): `next_at`, `last_at`.
