@@ -1,6 +1,8 @@
 # Inkwell API (backend)
 
-**Live app:** [reachout-web.netlify.app](https://reachout-web.netlify.app) · **Frontend repo:** [reachout-frontend](https://github.com/sarbeshtiwari/inkwell-frontend)
+Built and maintained by **[Sarbesh Kumar Tiwari](https://sarbeshtiwari.vercel.app)** · [GitHub](https://github.com/sarbeshtiwari)
+
+**Live app:** [reachout-web.netlify.app](https://reachout-web.netlify.app) · **Frontend repo:** [inkwell-frontend](https://github.com/sarbeshtiwari/inkwell-frontend)
 
 Inkwell helps people run their outreach and job search from one place:
 
