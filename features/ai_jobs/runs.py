@@ -36,7 +36,7 @@ def run_match(uid, want, sources, use_llm):
         run.update(state="done", stage="Done", results=results, errors=state["errors"], engine=state["engine"],
                    considered=state.get("considered", 0))
     except Exception as e:
-        print(f"[Reachout] AI match failed: {e!r}", flush=True)
+        print(f"[Inkwell] AI match failed: {e!r}", flush=True)
         run.update(state="error", stage="Error", error="Something went wrong while matching. Please try again.")
     run["finished"] = time.time()
     with ws.lock:
@@ -58,7 +58,7 @@ def mark_rules(ws, results, jds):
             pay = signals.pay_range(r, jd)
             r["pay"] = pay["text"] if pay else ""
         except Exception as e:  # one odd posting never spoils the whole run
-            print(f"[Reachout] rules check skipped for {r.get('company')}: {e!r}", flush=True)
+            print(f"[Inkwell] rules check skipped for {r.get('company')}: {e!r}", flush=True)
             r.setdefault("rules", [])
         if r["rules"]:
             set_status(ws, r["id"], "skip", only_if_new=True, note=r["rules"][0]["rule"])

@@ -23,7 +23,7 @@ def run_apply(uid, picks, visible=False):
             try:
                 res = closed_result(job) or apply_one(ws, job, submit=True, visible=visible)
             except Exception as e:
-                print(f"[Reachout] auto-apply error: {e}", flush=True)
+                print(f"[Inkwell] auto-apply error: {e}", flush=True)
                 res = {"state": "needs_you", "detail": "The application page didn't load as expected. Apply on the site.", "url": job["url"]}
             res["at"] = time.time()
             with ws.lock:
@@ -40,7 +40,7 @@ def run_apply(uid, picks, visible=False):
         st["state"] = "done"
         from features.notify import notify
         ok = sum(1 for j in picks if (ws.load("ai_applied", {}).get(j["id"]) or {}).get("state") == "applied")
-        notify(uid, f"Reachout AI applied to {ok} job{'s' if ok != 1 else ''}", f"{len(picks) - ok} need you to finish them.",
+        notify(uid, f"Inkwell AI applied to {ok} job{'s' if ok != 1 else ''}", f"{len(picks) - ok} need you to finish them.",
                "/app/ai-jobs", "application")
 
 
@@ -84,7 +84,7 @@ def apply(ws):
         raise core.Invalid("Already applying. Wait for it to finish.", status=409)
     for _ in picks:
         if core.rate_limited(("ai-apply", ws.uid), APPLY_PER_DAY, 86400):
-            raise core.Invalid(f"Reachout AI applies to at most {APPLY_PER_DAY} jobs a day.", status=429)
+            raise core.Invalid(f"Inkwell AI applies to at most {APPLY_PER_DAY} jobs a day.", status=429)
     visible = bool(core.body().get("watch")) and can_hand_over()
     APPLYING[ws.uid] = {"state": "running", "total": len(picks), "done": 0, "current": "", "visible": visible}
     threading.Thread(target=run_apply, args=(ws.uid, picks, visible), daemon=True, name="ai-apply").start()
@@ -110,7 +110,7 @@ def finish(ws, jid):
     """Open a browser window on this computer with the form filled in, for the user to answer the rest and submit."""
     core = C()
     if not can_hand_over():
-        raise core.Invalid("This works when Reachout runs on your own computer. Open the form on the site instead.", status=400)
+        raise core.Invalid("This works when Inkwell runs on your own computer. Open the form on the site instead.", status=400)
     if not ws.settings().get("auto_apply_consent"):
         raise core.Invalid("Turn on auto-apply and confirm first.", "consent")
     job = next((r for r in ws.load("ai_match", {}).get("results", []) if r["id"] == jid and r.get("can_apply")), None)

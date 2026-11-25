@@ -481,7 +481,7 @@ def auto_scan_all():
                     bridge.notify(ws.uid, f"{r['added']} new job{'s' if r['added'] != 1 else ''} from your alerts",
                                   f"{len(good)} match your profile.", "#jobs", "job")
         except Exception as e:
-            print(f"[Reachout] job scan skipped for an account: {getattr(e, 'message', e)}", flush=True)
+            print(f"[Inkwell] job scan skipped for an account: {getattr(e, 'message', e)}", flush=True)
 
 
 # ================================================================= hiring posts

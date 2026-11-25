@@ -38,13 +38,13 @@ def check_config():
         problems.append("SITE_URL must be your public https:// address (it's used for links, the sitemap and share cards; "
                         "without it the address comes from request headers, which visitors control).")
     if not ADMIN_EMAILS:
-        print("[Reachout] Note: ADMIN_EMAILS is not set, so nobody can see Reachout's own site enquiries.", flush=True)
+        print("[Inkwell] Note: ADMIN_EMAILS is not set, so nobody can see Inkwell's own site enquiries.", flush=True)
     if os.environ.get("SECRET_KEY") and len(os.environ["SECRET_KEY"]) < 32:
         problems.append("SECRET_KEY is too short. Use at least 32 random characters (python -c 'import secrets; print(secrets.token_urlsafe(48))').")
     if not SECURE_COOKIES:
-        print("[Reachout] WARNING: COOKIE_SECURE=0 on a public server: login cookies can travel over plain http.", flush=True)
+        print("[Inkwell] WARNING: COOKIE_SECURE=0 on a public server: login cookies can travel over plain http.", flush=True)
     if problems:
-        sys.exit("Reachout won't start with these production settings:\n- " + "\n- ".join(problems))
+        sys.exit("Inkwell won't start with these production settings:\n- " + "\n- ".join(problems))
 
 
 def init_storage():
@@ -184,7 +184,7 @@ def delete_user_data(uid):
             try:
                 CLOUD.destroy(row["public_id"], kind="image", delivery="upload")
             except Exception as e:
-                print(f"[Reachout] Couldn't remove image {row['public_id']}: {e}", flush=True)
+                print(f"[Inkwell] Couldn't remove image {row['public_id']}: {e}", flush=True)
     for name in USER_COLLECTIONS:
         getattr(M, name).delete_many({"uid": uid})
     M.wa_sessions.delete_one({"_id": uid})

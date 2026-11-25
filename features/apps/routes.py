@@ -26,7 +26,7 @@ def run_in_background(ws, full):
         try:
             scan(ws, full=full)
         except Exception as e:
-            print(f"[Reachout] apps sync: {e}", flush=True)
+            print(f"[Inkwell] apps sync: {e}", flush=True)
     threading.Thread(target=go, daemon=True, name=f"apps-sync-{ws.uid[:6]}").start()
 
 
@@ -62,7 +62,7 @@ def get_app(ws, aid):
 @login_required
 def sync_now(ws):
     if not ws.profile().get("smtp_password"):
-        raise C().Invalid("Set up email on the Profile page first, so Reachout can read your inbox.")
+        raise C().Invalid("Set up email on the Profile page first, so Inkwell can read your inbox.")
     if ws.uid in PROGRESS:
         return jsonify(ok=True, running=True)
     full = bool(C().body().get("full")) or not ws.load("apps_sync", {}).get("full_done")

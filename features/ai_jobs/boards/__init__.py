@@ -28,7 +28,7 @@ def load():
         try:
             mod = importlib.import_module(f"{__name__}.{m.name}")
         except Exception as e:  # a broken reader never takes the others down
-            print(f"[Reachout] job board {m.name} not loaded: {e!r}", flush=True)
+            print(f"[Inkwell] job board {m.name} not loaded: {e!r}", flush=True)
             continue
         if callable(getattr(mod, "fetch", None)) and getattr(mod, "KIND", "") in ("company", "search"):
             BOARDS[m.name] = mod

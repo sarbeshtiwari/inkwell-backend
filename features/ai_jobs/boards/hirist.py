@@ -1,4 +1,4 @@
-"""Hirist (hirist.tech): Indian tech jobs from the public search page. Its list is drawn by scripts, so Reachout
+"""Hirist (hirist.tech): Indian tech jobs from the public search page. Its list is drawn by scripts, so Inkwell
 opens the page in its headless browser and reads the job cards (stopping at any bot check, never getting round it).
 Find only: you open the job and apply on Hirist yourself. Search URL as in Morrow's hirist_bot (MIT)."""
 import re

@@ -24,7 +24,7 @@ from core.validation import Invalid
 
 def send_system_email(to, subject, text):
     if DEV_OTP:
-        print(f"\n[Reachout dev] Email to {to}: {subject}\n{text}\n", flush=True)
+        print(f"\n[Inkwell dev] Email to {to}: {subject}\n{text}\n", flush=True)
         return
     try:
         if not SMTP_HOST:

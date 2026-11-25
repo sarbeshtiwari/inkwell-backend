@@ -70,7 +70,7 @@ def safe_board_jobs(ats, board):
     try:
         return board_jobs(ats, board) or []
     except Exception as e:  # one odd board never spoils the search
-        print(f"[Reachout] board {ats}:{board} skipped: {e!r}", flush=True)
+        print(f"[Inkwell] board {ats}:{board} skipped: {e!r}", flush=True)
         return []
 
 

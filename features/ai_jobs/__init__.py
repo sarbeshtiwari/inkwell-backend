@@ -1,8 +1,8 @@
-"""Reachout AI job match: read the user's resume, search for openings, rank them, and (when allowed) apply.
+"""Inkwell AI job match: read the user's resume, search for openings, rank them, and (when allowed) apply.
 
 The pipeline is a LangChain runnable chain:
 
-    profile (resume + what they want) -> search (LangChain tools) -> rank (Reachout's own engine)
+    profile (resume + what they want) -> search (LangChain tools) -> rank (Inkwell's own engine)
                                       -> optional review by a local open-source model (Ollama)
 
 * Matching runs on our own engine, on our server, with no outside AI service: skills found in the resume vs.

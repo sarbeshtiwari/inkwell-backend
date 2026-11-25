@@ -1,4 +1,4 @@
-# Render blueprint for this repository (the Reachout API), built from ./Dockerfile.
+# Render blueprint for this repository (the Inkwell API), built from ./Dockerfile.
 # Render → New → Blueprint → pick this repo. Values marked sync: false are asked for once, in the dashboard.
 services:
   - type: web
@@ -30,7 +30,7 @@ services:
         value: "0"
       # Shown on the privacy policy and terms pages.
       - key: OPERATOR_NAME
-        value: the Reachout team
+        value: the Inkwell team
       - key: JURISDICTION
         value: India
       - key: SENTRY_DSN          # optional: error reports (sentry.io → project → Client Keys)

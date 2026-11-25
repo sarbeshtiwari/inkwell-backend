@@ -93,7 +93,7 @@ def sitemap():
 
 @app.get("/site.webmanifest")
 def manifest():
-    return jsonify(name="Reachout", short_name="Reachout", start_url="/app", display="standalone",
+    return jsonify(name="Inkwell", short_name="Inkwell", start_url="/app", display="standalone",
                    background_color="#fbfaf7", theme_color="#0f6b54",
                    icons=[{"src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png"},
                           {"src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png"}])
@@ -115,7 +115,7 @@ def auth_page():
     if current_uid():
         return redirect("/app")
     signup = request.path == "/signup"
-    title, robots = ("Create a free account · Reachout", "index, follow") if signup else ("Log in · Reachout", "noindex, follow")
+    title, robots = ("Create a free account · Inkwell", "index, follow") if signup else ("Log in · Inkwell", "noindex, follow")
     return page("dist/index.html", TITLE=title, ROBOTS=robots)
 
 
@@ -125,7 +125,7 @@ def app_page(subpath=""):
     """The workspace. Pages have real paths (/app/campaign, /app/applications/<id>) handled by the React router."""
     if not current_uid():
         return redirect("/login")
-    return page("dist/index.html", TITLE="Reachout", ROBOTS="noindex, nofollow")
+    return page("dist/index.html", TITLE="Inkwell", ROBOTS="noindex, nofollow")
 
 
 @app.get("/dist/<path:name>")

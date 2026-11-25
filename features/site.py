@@ -1,11 +1,11 @@
-"""Website builder: a one-page personal site, designed and managed in Reachout and hosted by Reachout.
+"""Website builder: a one-page personal site, designed and managed in Inkwell and hosted by Inkwell.
 
 - The owner edits a draft (theme + ordered sections); visitors only ever see the published copy.
 - Sites live at /p/<address> (the same address as the Portfolio). The Projects section is filled from
   the Portfolio, so projects added there appear on the site.
 - Visitors can write through the contact form; each message becomes a lead on the owner's Leads page
   (stored encrypted) and the owner is notified.
-- Every site carries a small “Powered by Reachout” tag in the footer.
+- Every site carries a small “Powered by Inkwell” tag in the footer.
 - Images the owner uploads are stored encrypted and served at /p/i/<id>.
 """
 
@@ -175,7 +175,7 @@ def section(kind, variant=None, **data):
 
 
 def seed(ws):
-    """A sensible first site from what Reachout already knows (name, GitHub, resume links, job preferences)."""
+    """A sensible first site from what Inkwell already knows (name, GitHub, resume links, job preferences)."""
     core = C()
     user = core.find_user(uid=ws.uid) or {}
     prof = ws.profile() or {}
@@ -418,7 +418,7 @@ def render_section(s, cfg, projects):
             cover = f'<a class="p-img" href="{escape(live or code or "#")}" target="_blank" rel="noopener"><img src="{escape(img)}" alt="{escape(p.get("title") or "Project")} preview" width="1200" height="630" loading="lazy" decoding="async" data-fallback="1"><span>{escape((p.get("title") or "?")[:1])}</span></a>' if img else ""
             cards.append(f'<article class="proj card rv {"feat" if p.get("featured") and v == "grid" else ""}">{cover}<div class="p-b"><h3>{escape(p.get("title") or "")}</h3>'
                          f'<p>{escape(p.get("description") or "")}</p><div class="tags">{tags}</div><div class="plinks">{links}</div></div></article>')
-        empty = '<p class="muted rv">Add projects in Reachout → Portfolio → Projects and they appear here.</p>' if not cards else ""
+        empty = '<p class="muted rv">Add projects in Inkwell → Portfolio → Projects and they appear here.</p>' if not cards else ""
         return f'{head(d, "Projects")}{intro(d)}<div class="projs projs-{v}">{"".join(cards)}</div>{empty}'
     if kind in ("experience", "education"):
         rows = "".join(f'<div class="tl-item card rv"><div class="tl-when">{escape(i.get("period") or "")}</div><div><h3>{escape(i.get("role") or "")}</h3>'
@@ -635,7 +635,7 @@ d.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(a&&!
 <button class="menu" aria-label="Menu"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></div></nav>
 <main>{''.join(body)}</main>
 <footer><div class="wrap foot"><span>© {date.today().year} {escape(prof['name'])}</span>{social_links(prof['socials'])}</div>
-<div class="wrap powered"><a href="{escape(C().LANDING_URL or C().site_url())}/?ref=site-{escape(slug)}" target="_blank" rel="noopener"><span class="pw-mark">✦</span>Powered by <b>Reachout</b></a></div></footer>
+<div class="wrap powered"><a href="{escape(C().LANDING_URL or C().site_url())}/?ref=site-{escape(slug)}" target="_blank" rel="noopener"><span class="pw-mark">✦</span>Powered by <b>Inkwell</b></a></div></footer>
 <script nonce="{nonce}">var PREVIEW={'true' if preview else 'false'},SLUG={json.dumps(slug)};{script}</script></body></html>"""
 
 

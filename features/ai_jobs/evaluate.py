@@ -163,7 +163,7 @@ def llm_blocks(profile, job, jd, reqs):
                  "reqs": "\n".join("- " + x["requirement"] for x in reqs[:8])}, tokens_out=900)
         return r if isinstance(r, dict) else {}
     except Exception as e:
-        print(f"[Reachout] evaluation model step skipped: {e}", flush=True)
+        print(f"[Inkwell] evaluation model step skipped: {e}", flush=True)
         return {}
 
 
@@ -181,7 +181,7 @@ def cover_letter(profile, job, jd, name):
             if len(text) > 300:
                 return text
         except Exception as e:
-            print(f"[Reachout] cover letter model step skipped: {e}", flush=True)
+            print(f"[Inkwell] cover letter model step skipped: {e}", flush=True)
     jm = J()
     shared = [s for s in jm.skill_hits(jd, jm.SKILLS) if s in set(jm.skill_hits(profile["resume"], jm.SKILLS)) and s not in ("C", "R")]
     lines = [l for l in resume_lines(profile["resume"]) if any(s.lower() in l.lower() for s in shared)][:2]
@@ -205,7 +205,7 @@ def draft_answers(profile, job, jd, questions):
         return [{"question": a["question"], "answer": str(a.get("answer", "")).strip()} for a in (r or {}).get("answers", [])
                 if isinstance(a, dict) and a.get("question") and str(a.get("answer", "")).strip()]
     except Exception as e:
-        print(f"[Reachout] draft answers skipped: {e}", flush=True)
+        print(f"[Inkwell] draft answers skipped: {e}", flush=True)
         return []
 
 
@@ -342,7 +342,7 @@ def _evaluate(ws, job, check_live):
     bank = ws.load("ai_answers", {})
     open_q = [q for q in pending_q if not answer_for(bank, q, job.get("company", ""))]
     report = {
-        "id": job["id"], "at": time.time(), "engine": f"Reachout AI + {models.current()['label']}" if ai else "Reachout AI",
+        "id": job["id"], "at": time.time(), "engine": f"Inkwell AI + {models.current()['label']}" if ai else "Inkwell AI",
         "title": job["title"], "company": job["company"], "url": job["url"],
         "score5": score5, "verdict": verdict_for(score5), "confidence": conf, "checks": conf_gaps, "dimensions": dims,
         "live": live, "rules": hits,
@@ -396,7 +396,7 @@ def run_batch(uid, jids):
                 st["current"] = f"{job['title']} · {job['company']}"
                 save_report(ws, evaluate_job(ws, job))
             except Exception as e:
-                print(f"[Reachout] evaluation failed: {e!r}", flush=True)
+                print(f"[Inkwell] evaluation failed: {e!r}", flush=True)
             st["done"] += 1
     finally:
         st["state"] = "done"
@@ -466,7 +466,7 @@ def render_pdf(text, name):
             finally:
                 b.close()
     except Exception as e:
-        print(f"[Reachout] cover letter PDF failed: {e!r}", flush=True)
+        print(f"[Inkwell] cover letter PDF failed: {e!r}", flush=True)
         return None
 
 

@@ -1,4 +1,4 @@
-# Reachout API (this repository on its own). Chromium + its system libraries come with the Playwright image,
+# Inkwell API (this repository on its own). Chromium + its system libraries come with the Playwright image,
 # so WhatsApp can be switched on (WHATSAPP_ENABLED=1); with it off, the browser is simply never started.
 FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
 

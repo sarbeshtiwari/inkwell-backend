@@ -132,7 +132,7 @@ def scan(ws, full=False, notify=True):
                         msg = core.email_lib.message_from_bytes(raw, policy=core.email_policy)
                         a, u, ch = ingest(apps, msg, mid, subject, sender, date_h, me_names)
                     except Exception as e:  # one odd email mustn't stop the scan
-                        print(f"[Reachout] apps: skipped a message ({e})", flush=True)
+                        print(f"[Inkwell] apps: skipped a message ({e})", flush=True)
                         continue
                     added += a
                     updated += u

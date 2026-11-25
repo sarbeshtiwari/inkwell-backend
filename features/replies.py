@@ -1,8 +1,8 @@
-"""Replies: notices when someone answers an email you sent from Reachout, and reads what they wrote.
+"""Replies: notices when someone answers an email you sent from Inkwell, and reads what they wrote.
 
-Matching: every email Reachout sends has its own Message-ID, which a reply carries in In-Reply-To /
+Matching: every email Inkwell sends has its own Message-ID, which a reply carries in In-Reply-To /
 References, so a reply in the same thread is tied to the exact email and contact it answers. Replies sent
-as a new email are matched by the sender's address (only if Reachout has emailed that address).
+as a new email are matched by the sender's address (only if Inkwell has emailed that address).
 
 Reading: the reply's own text is separated from the quoted history, then read for what the person means
 (interested, not interested, asks for your resume or CTC, proposes a call, refers you to someone, …) and
@@ -273,8 +273,8 @@ def root_of(addr):
 def find_sent(ws, msg, addr):
     """The send_log row this email answers, or None.
 
-    1. thread headers (In-Reply-To / References) point at an email Reachout sent;
-    2. the sender is an address Reachout emailed;
+    1. thread headers (In-Reply-To / References) point at an email Inkwell sent;
+    2. the sender is an address Inkwell emailed;
     3. the sender is at the same company domain and the subject quotes what was sent
        (you wrote to careers@x.com, people@hr.x.com answered "Re: <your subject>")."""
     core = C()
@@ -494,7 +494,7 @@ def tick():
         try:
             bridge.with_deadline(240, scan, ws)
         except Exception as e:
-            print(f"[Reachout] reply check skipped for an account: {getattr(e, 'message', e)}", flush=True)
+            print(f"[Inkwell] reply check skipped for an account: {getattr(e, 'message', e)}", flush=True)
 
 
 def start_workers():
@@ -561,7 +561,7 @@ def mark(ws, rid_):
     return jsonify(ok=True, handled=handled)
 
 
-# ================================================================= answering from Reachout
+# ================================================================= answering from Inkwell
 
 DETAIL_FIELDS = [  # key, label, how to recognise it being asked for
     ("experience", "Total experience", r"(?:years? of |total |relevant |work )experience|\bexperience\b"),
@@ -821,7 +821,7 @@ def send_reply(ws, key):
     finally:
         core.shutil.rmtree(tmp, ignore_errors=True)
     rid = rec.get("rid")
-    ws.log("email", to, rec.get("contact") or rec.get("from") or "", "sent", "Reply sent from Reachout", rid=rid, preview=subject,
+    ws.log("email", to, rec.get("contact") or rec.get("from") or "", "sent", "Reply sent from Inkwell", rid=rid, preview=subject,
            message_id=msg["Message-ID"])
     now = datetime.now().isoformat(timespec="seconds")
     rec["answered"] = {"at": now, "subject": subject, "body": text[:4000], "to": to, "cc": cc, "documents": docs}

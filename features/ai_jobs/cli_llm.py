@@ -1,7 +1,7 @@
 """The AI through the Claude Code or Kiro command-line tool on this computer, under the user's own plan.
 Adapted from Morrow (MIT, (c) 2026 Morrow contributors): common/ai_cli.py and common/llm.py.
 
-Only used when Reachout runs on the user's own computer (never on the hosted service): a personal Claude Code or
+Only used when Inkwell runs on the user's own computer (never on the hosted service): a personal Claude Code or
 Kiro login is for its owner's own use. With web=True the tool may search and read web pages (research and the daily
 briefing); otherwise it gets no tools at all."""
 
@@ -59,7 +59,7 @@ def run(pid, prompt, web=False, timeout=90, model=""):
 
 
 def ask(pid, system, human, as_json=False, web=False, timeout=90, model=""):
-    """One question with Reachout's instructions on top; for JSON, a second try asks for JSON only."""
+    """One question with Inkwell's instructions on top; for JSON, a second try asks for JSON only."""
     from features.ai_jobs.models import first_json
     prompt = f"{system}\n\n{human}"
     if as_json:

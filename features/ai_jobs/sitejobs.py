@@ -1,6 +1,6 @@
 """Jobs from any company's own careers website (career-ops' scan of a careers URL / browser-extract).
 
-1. The page often embeds or links a job board Reachout already reads (Greenhouse iframe, Lever links, Workday…):
+1. The page often embeds or links a job board Inkwell already reads (Greenhouse iframe, Lever links, Workday…):
    that board is used, so its jobs come with full descriptions (and Greenhouse/Lever/Ashby can be auto-applied).
 2. Otherwise the jobs are read from the page itself: schema.org JobPosting data (what careers pages publish for
    Google's job search), on the careers page and on the job pages it links to.
@@ -105,7 +105,7 @@ def _salary(s):
 
 
 def posting(x, url, site):
-    """A schema.org JobPosting -> Reachout's job shape."""
+    """A schema.org JobPosting -> Inkwell's job shape."""
     org = x.get("hiringOrganization") or {}
     company = (org.get("name") if isinstance(org, dict) else str(org)) or site
     remote = "Remote" if str(x.get("jobLocationType", "")).upper() == "TELECOMMUTE" else ""
@@ -253,7 +253,7 @@ def from_feeds(reqs, home, base, company):
         except (requests.RequestException, ValueError):
             continue
         jobs = feed_jobs(data, base, (urlsplit(base).hostname or "").removeprefix("www."), company)
-        if jobs:  # links into a board Reachout reads: read the board itself (full descriptions, every job)
+        if jobs:  # links into a board Inkwell reads: read the board itself (full descriptions, every job)
             boards = []
             for j in jobs[:20]:
                 c = (from_link(j["url"]) or [None])[0]
@@ -300,7 +300,7 @@ def render(url):
             finally:
                 browser.close()
     except Exception as e:
-        print(f"[Reachout] couldn't open {urlsplit(url).hostname}: {e!r}", flush=True)
+        print(f"[Inkwell] couldn't open {urlsplit(url).hostname}: {e!r}", flush=True)
         return "", "", [], []
 
 
@@ -342,7 +342,7 @@ def discover(url, rendered=True):
 
     Crawls like a person would: the careers page, then its job-list pages ("Open roles", "Explore jobs", a hiring
     site the company links to), up to two levels, reading each page plain first and in a headless browser when its
-    scripts draw the jobs. It stops as soon as it finds a job board Reachout reads (Greenhouse, Workday…) or the
+    scripts draw the jobs. It stops as soon as it finds a job board Inkwell reads (Greenhouse, Workday…) or the
     jobs' own JobPosting data; otherwise it reads the job pages it found, or at least their titles and links."""
     home, start, began = site_of(url), url, time.time()
     queue, seen, renders = [(url, 0)], set(), 0

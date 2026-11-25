@@ -146,7 +146,7 @@ def llm_review(profile, ranked, top=6, hint=""):
             j["ai_verdict"] = str(r.get("verdict", ""))[:200]
             j["score"] = round(0.6 * j["score"] + 0.4 * fit)
         except Exception as e:
-            print(f"[Reachout] model review skipped: {e}", flush=True)
+            print(f"[Inkwell] model review skipped: {e}", flush=True)
             break
     ranked.sort(key=lambda x: -x["score"])
     return ranked
@@ -203,11 +203,11 @@ def build_chain(keys, sources, portals=(), location=""):
         return state
 
     def review(state):
-        engine = "Reachout AI"
+        engine = "Inkwell AI"
         from features.ai_jobs import models
         if state.get("use_llm") and models.current():
             state["ranked"] = llm_review(state["profile"], state["ranked"], hint=state.get("taste_hint", ""))
-            engine = f"Reachout AI + {models.current()['label']}"
+            engine = f"Inkwell AI + {models.current()['label']}"
         for r in state["ranked"]:
             r.pop("_text", None)
         return {**state, "engine": engine}

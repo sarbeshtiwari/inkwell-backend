@@ -229,7 +229,7 @@ def scan(ws, full=False):
                     try:
                         row = index_row(ws, item[1], me, me_names)
                     except Exception as e:  # one odd email mustn't stop the scan
-                        print(f"[Reachout] inbox: skipped a message ({e})", flush=True)
+                        print(f"[Inkwell] inbox: skipped a message ({e})", flush=True)
                         continue
                     if row and row["mid"] not in known:
                         known.add(row["mid"])
@@ -290,7 +290,7 @@ def run_in_background(ws, full=False):
         try:
             scan(ws, full=full)
         except Exception as e:
-            print(f"[Reachout] inbox sync: {e}", flush=True)
+            print(f"[Inkwell] inbox sync: {e}", flush=True)
     threading.Thread(target=go, daemon=True, name=f"inbox-sync-{ws.uid[:6]}").start()
 
 
@@ -399,7 +399,7 @@ def edit_company(ws, key):
 @login_required
 def sync(ws):
     if not ws.profile().get("smtp_password"):
-        raise C().Invalid("Set up email on the Profile page first, so Reachout can read your inbox.")
+        raise C().Invalid("Set up email on the Profile page first, so Inkwell can read your inbox.")
     if ws.uid not in PROGRESS:
         run_in_background(ws, full=bool(C().body().get("full")))
         time.sleep(0.3)

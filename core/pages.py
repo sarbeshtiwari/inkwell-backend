@@ -64,7 +64,7 @@ def page(name, status=200, **values):
         # API-only deployment (the backend repo on its own; pages live on Netlify): no HTML pages here.
         if status == 404 or name == "404.html":
             return jsonify(error="Not found."), 404
-        return jsonify(error="This server only provides the Reachout API."), 404
+        return jsonify(error="This server only provides the Inkwell API."), 404
     doc = (WEB / name).read_text(encoding="utf-8").replace("{{SITE_URL}}", site_url())
     doc = doc.replace("{{OPERATOR}}", html.escape(OPERATOR_NAME)).replace("{{JURISDICTION}}", html.escape(JURISDICTION))
     # Preferences come from HttpOnly cookies and are handed to the page as attributes on <html>.

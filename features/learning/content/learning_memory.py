@@ -1,5 +1,5 @@
 # Adapted from Morrow (MIT, (c) 2026 Morrow contributors): common/learning_memory.py (stamp, record). See ../LICENSE-morrow.
-"""The in-memory part of Morrow's learning record. Reachout stores the record per user in its workspace
+"""The in-memory part of Morrow's learning record. Inkwell stores the record per user in its workspace
 (features/learning/progress.py) instead of a learning.json file, so the file locking is not needed here."""
 import datetime as dt
 

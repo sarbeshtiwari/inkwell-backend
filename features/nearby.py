@@ -1,9 +1,9 @@
 """Companies near me: the companies around a place (the user's location, if they allow it, or a city and area they
-type), on a map, with what Reachout can find about each: kind of company, its careers page, open jobs on its job
+type), on a map, with what Inkwell can find about each: kind of company, its careers page, open jobs on its job
 board, and the hiring email it publishes on its own website.
 
 Places come from OpenStreetMap (Photon for nearby offices, Nominatim for addresses and the website/email tags
-companies publish there). Checking a company reuses Reachout's own readers: the job boards (ai_jobs), any careers
+companies publish there). Checking a company reuses Inkwell's own readers: the job boards (ai_jobs), any careers
 website (sitejobs) and the email finder (finder). Only public business information; nothing about people.
 The user's position is rounded to about 100 m and kept only as the last area they searched."""
 
@@ -21,7 +21,7 @@ from bridge import login_required
 
 bp = Blueprint("nearby", __name__)
 
-UA = {"User-Agent": "ReachoutCompanyMap/1.0 (+https://reachout-web.netlify.app)"}
+UA = {"User-Agent": "InkwellCompanyMap/1.0 (+https://reachout-web.netlify.app)"}
 PHOTON = "https://photon.komoot.io"
 NOMINATIM = "https://nominatim.openstreetmap.org"
 TAGS = ("office", "building:office", "building:commercial", "amenity:coworking_space", "landuse:commercial")
@@ -350,7 +350,7 @@ def run_checks(uid, ids):
             try:
                 return cid, check_company(row, area)
             except Exception as e:
-                print(f"[Reachout] company check skipped ({row['name']}): {e!r}", flush=True)
+                print(f"[Inkwell] company check skipped ({row['name']}): {e!r}", flush=True)
                 return cid, {"checked": time.time(), "note": "Couldn't check this company.", "openings": None, "emails": [], "jobs": [],
                              "careers": "", "board": "", "openings_here": 0}
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -474,12 +474,12 @@ def track(ws, cid):
     row = next((r for r in (ws.load("nearby", {}) or {}).get("companies", []) if r["id"] == cid), None)
     info = (ws.load("nearby_info", {}) or {}).get(cid) or {}
     if not row or not (info.get("careers") or row.get("website")):
-        raise core.Invalid("Check this company first; Reachout needs its careers page.")
+        raise core.Invalid("Check this company first; Inkwell needs its careers page.")
     from features.ai_jobs.portals import from_link, try_boards
     link = info.get("careers") or row["website"]
     hit = try_boards(from_link(link)) or (("site", link, [None] * (info.get("openings") or 0)) if info.get("openings") else None)
     if not hit:
-        raise core.Invalid("Couldn't find a job board Reachout can read for this company.")
+        raise core.Invalid("Couldn't find a job board Inkwell can read for this company.")
     ats, slug, jobs = hit
     with ws.lock:
         rows = [r for r in (ws.load("ai_portals", []) or []) if (r["ats"], r["slug"]) != (ats, slug)]

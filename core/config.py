@@ -25,7 +25,7 @@ def env_int(name, default):
     try:
         return int(str(os.environ.get(name) or "").strip() or default)
     except ValueError:
-        print(f"[Reachout] Ignoring {name}={os.environ.get(name)!r}: not a whole number; using {default}.", flush=True)
+        print(f"[Inkwell] Ignoring {name}={os.environ.get(name)!r}: not a whole number; using {default}.", flush=True)
         return default
 
 
@@ -157,7 +157,7 @@ TERMS_VERSION = "2026-10-01"
 
 
 # Shown on the privacy policy and terms pages.
-OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "the Reachout team")
+OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "the Inkwell team")
 
 
 JURISDICTION = os.environ.get("JURISDICTION", "India")  # public address, e.g. https://reachout.example.com

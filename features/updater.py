@@ -1,6 +1,6 @@
-"""Self-update for the copy of Reachout running on your own computer (after career-ops' update-system.mjs).
+"""Self-update for the copy of Inkwell running on your own computer (after career-ops' update-system.mjs).
 
-Reachout is three git checkouts side by side: backend/, frontend/ and web/. Check fetches each one's GitHub
+Inkwell is three git checkouts side by side: backend/, frontend/ and web/. Check fetches each one's GitHub
 branch and lists what's new. Update fast-forwards only (never merges or overwrites): it refuses when a checkout
 has local edits or commits of its own, so nothing you changed is lost. Your data is never touched: it lives in
 MongoDB and in data/ and .env, which git ignores. Before updating, the current version of each checkout is
@@ -87,7 +87,7 @@ def blockers(statuses):
 def say(line):
     STATE["log"] = (STATE["log"] + [line])[-40:]
     STATE["at"] = time.time()
-    print(f"[Reachout] update: {line}", flush=True)
+    print(f"[Inkwell] update: {line}", flush=True)
 
 
 def rebuild(changed):
@@ -104,7 +104,7 @@ def rebuild(changed):
 
 def restart():
     """Replace this process with a fresh one running the new code (same command line)."""
-    say("Restarting Reachout…")
+    say("Restarting Inkwell…")
     time.sleep(1.5)
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -150,7 +150,7 @@ def run_update(target=None):
             STATE.update(state="done", error="", message="Nothing to change.")
             return
         rebuild(changed)
-        STATE.update(state="restarting", error="", message="Updated. Reachout is restarting; this page reloads in a moment.")
+        STATE.update(state="restarting", error="", message="Updated. Inkwell is restarting; this page reloads in a moment.")
         threading.Thread(target=restart, daemon=True).start()
     except Exception as e:
         STATE.update(state="error", error=f"The update stopped: {str(e)[:200]}. Your data is untouched.")
@@ -161,9 +161,9 @@ def run_update(target=None):
 
 def guard(core, ws):
     if not enabled():
-        raise core.Invalid("Updates from here work when Reachout runs from its git folders on your own computer.", status=400)
+        raise core.Invalid("Updates from here work when Inkwell runs from its git folders on your own computer.", status=400)
     if not core.is_admin(ws.uid):
-        raise core.Invalid("Only the owner of this Reachout can update it.", status=403)
+        raise core.Invalid("Only the owner of this Inkwell can update it.", status=403)
 
 
 @bp.get("/api/update")

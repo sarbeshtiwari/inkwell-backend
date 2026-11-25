@@ -29,14 +29,14 @@ def notify_admins(lead):
     to = sorted(ADMIN_EMAILS) or ([MAIL_FROM] if MAIL_FROM else [])
     if not to and not DEV_OTP:
         return
-    text = (f"New enquiry on Reachout\n\nName: {lead['name']}\nEmail: {lead['email']}\n"
+    text = (f"New enquiry on Inkwell\n\nName: {lead['name']}\nEmail: {lead['email']}\n"
             f"Phone: {lead.get('phone') or '-'}\nCompany: {lead.get('company') or '-'}\nTopic: {lead['topic']}\n"
-            f"From: {lead.get('source') or '-'}\n\n{lead['message']}\n\nOpen the Leads inbox in Reachout to reply.")
+            f"From: {lead.get('source') or '-'}\n\n{lead['message']}\n\nOpen the Leads inbox in Inkwell to reply.")
     for addr in to or ["(site owner)"]:
         try:
             send_system_email(addr, f"New enquiry: {lead['topic']} from {lead['name']}", text)
         except Exception as e:
-            print(f"[Reachout] Couldn't email enquiry alert: {e}", flush=True)
+            print(f"[Inkwell] Couldn't email enquiry alert: {e}", flush=True)
 
 
 @app.post("/api/leads")
@@ -80,7 +80,7 @@ def create_lead():
 
 
 def lead_scope(ws):
-    """Whose enquiries a request is about: your own website's (default), or Reachout's own site (admins only)."""
+    """Whose enquiries a request is about: your own website's (default), or Inkwell's own site (admins only)."""
     if request.args.get("scope") == "site":
         if not is_admin(ws.uid):
             raise Invalid("Only the site owner can see this.", status=403)

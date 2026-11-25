@@ -8,7 +8,7 @@ from bridge import login_required
 from features.ai_jobs.common import C, bp
 
 
-# Answers the user wrote, or answers Reachout learned from forms they filled in themselves. Learned and drafted
+# Answers the user wrote, or answers Inkwell learned from forms they filled in themselves. Learned and drafted
 # answers wait for the user's approval ("review"); only approved answers are ever typed into a form.
 
 ANS_STOP = set("a an the to of in for and or your you are is do does did have has with this that what which how why "

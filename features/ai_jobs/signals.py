@@ -328,7 +328,7 @@ def legitimacy(job, jd, live=None, reposts=0):
     aimed = ai_aimed(jd)
     if aimed:
         signals.append(("Text aimed at AI tools", aimed[0][:160], "Neutral"))
-        notes.append("The posting has a line written for AI tools, often a check for automated applications. Reachout ignored "
+        notes.append("The posting has a line written for AI tools, often a check for automated applications. Inkwell ignored "
                      "it. Write the free-text answers yourself for this one.")
     if EVERGREEN.search(jd):
         notes.append("It reads as an ongoing / talent-pool posting: a pipeline role, not a ghost job, but replies can be slow.")

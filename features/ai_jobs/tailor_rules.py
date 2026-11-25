@@ -1,4 +1,4 @@
-"""Reorder, never add: the checks a tailored resume must pass before Reachout uses it.
+"""Reorder, never add: the checks a tailored resume must pass before Inkwell uses it.
 Adapted from Morrow (MIT, (c) 2026 Morrow contributors): common/resume.py (_lint, ungrounded_terms, _accept_skills,
 _accept_bullets, _accept_text), for a resume read from a PDF instead of LaTeX.
 

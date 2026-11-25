@@ -1,4 +1,4 @@
-# Exact versions Reachout was last tested with (direct + security-relevant indirect dependencies).
+# Exact versions Inkwell was last tested with (direct + security-relevant indirect dependencies).
 # Install with:  pip install -r requirements.txt -c requirements.lock.txt
 # Audit with:    pip install pip-audit && pip-audit -r requirements.txt
 werkzeug==3.1.9

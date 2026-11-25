@@ -263,7 +263,7 @@ def publish(ws):
     user = core.find_user(uid=ws.uid) or {}
     content = json.dumps(feed(c, user.get("name", "")), indent=2, ensure_ascii=False) + "\n"
     n = len(public_items(c))
-    commit = ghub.write_file(ws, t["owner"], t["repo"], branch, t["path"], content, f"Update portfolio: {n} project{'s' if n != 1 else ''} (via Reachout)")
+    commit = ghub.write_file(ws, t["owner"], t["repo"], branch, t["path"], content, f"Update portfolio: {n} project{'s' if n != 1 else ''} (via Inkwell)")
     with ws.lock:
         c = cfg(ws)
         c["published"] = {"at": datetime.now().isoformat(timespec="seconds"), "sha": commit.get("sha"), "url": commit.get("html_url"),
@@ -332,5 +332,5 @@ h2{{margin:0 0 6px;font-size:19px}}.b p{{color:#a8aec5;margin:0 0 12px}}.tags{{d
 .links{{display:flex;gap:14px}}.links a{{color:#a5b4fc;text-decoration:none;font-weight:600}}.links a.live{{color:#fff;background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:6px 14px;border-radius:10px}}
 @media(max-width:720px){{article.feat{{grid-column:auto}}}}footer{{text-align:center;color:#6b7290;font-size:12px;padding-bottom:32px}}
 </style></head><body><header><h1>{name}</h1><p>{escape(c.get('headline') or '')}</p>{f'<p>{escape(c.get("about"))}</p>' if c.get('about') else ''}</header>
-<main>{cards or '<p>No projects yet.</p>'}</main><footer>Made with Reachout</footer></body></html>"""
+<main>{cards or '<p>No projects yet.</p>'}</main><footer>Made with Inkwell</footer></body></html>"""
     return Response(html, mimetype="text/html")

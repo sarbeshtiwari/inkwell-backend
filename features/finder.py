@@ -32,7 +32,7 @@ MAX_PAGES = 25            # per site
 SITES_PER_DAY = 300       # per account
 PAGE_BYTES = 1_500_000
 RUN_SECONDS = 30 * 60
-UA = "ReachoutEmailFinder/1.0 (+https://reachout-web.netlify.app; looks for published hiring contacts)"
+UA = "InkwellEmailFinder/1.0 (+https://reachout-web.netlify.app; looks for published hiring contacts)"
 HINTS = ("career", "job", "hiring", "recruit", "talent", "join", "work-with", "workwithus", "vacanc", "opening",
          "contact", "about", "team", "people", "hr", "reach")
 COMMON_PATHS = ("/careers", "/career", "/jobs", "/contact", "/contact-us", "/contactus", "/about", "/about-us",
@@ -230,7 +230,7 @@ def run_scan(run):
         try:
             return {**item, **scan_site(item["website"], run.stop)}
         except Exception as e:  # one broken site never ends the whole run
-            print(f"[Reachout] finder: {item['website']}: {e}", flush=True)
+            print(f"[Inkwell] finder: {item['website']}: {e}", flush=True)
             return {**item, "pages": 0, "emails": [], "other": 0, "error": "Couldn't read this website."}
 
     try:
@@ -241,7 +241,7 @@ def run_scan(run):
                 run.done += 1
         run.state = "stopped" if run.stop.is_set() else "done"
     except Exception as e:
-        print(f"[Reachout] finder run failed: {e}", flush=True)
+        print(f"[Inkwell] finder run failed: {e}", flush=True)
         run.state = "error"
     with ws.lock:
         ws.save("finder", run.snapshot())

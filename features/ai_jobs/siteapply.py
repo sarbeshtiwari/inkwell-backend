@@ -1,6 +1,6 @@
 """Applying on a company's own careers site (not just Greenhouse, Lever and Ashby).
 
-From the job page Reachout finds the application form the way a person would: a form already on the page, one
+From the job page Inkwell finds the application form the way a person would: a form already on the page, one
 embedded in a frame, or the "Apply" button or link that leads to it (on the company's site or the job board it
 uses). Sites that make you create an account first (Workday, iCIMS, Taleo…) are left to you in Watch mode,
 where you sign in yourself. It never gets round CAPTCHAs or bot checks.
@@ -17,7 +17,7 @@ NATIVE = ("greenhouse", "lever", "ashby")
 ACCOUNT_SITES = re.compile(r"myworkdayjobs\.com|myworkdaysite\.com|successfactors\.|\.icims\.com|taleo\.net|oraclecloud\.com|"
                            r"avature\.net|eightfold\.ai|csod\.com|\.adp\.com|peoplesoft|brassring|kenexa|ultipro|paylocity|"
                            r"workforcenow|jobs\.sap\.com|careers\.google\.com|amazon\.jobs|jobs\.apple\.com", re.I)
-# Sites Reachout never applies on (logins it won't handle, or job sites with their own rules on automation).
+# Sites Inkwell never applies on (logins it won't handle, or job sites with their own rules on automation).
 NEVER = re.compile(r"linkedin\.com|naukri\.com|indeed\.|glassdoor\.|monster\.|foundit\.|instahyre\.|wellfound\.com|angel\.co|hirist\.|cutshort\.io|ycombinator\.com", re.I)
 APPLY_TEXT = re.compile(r"^\W*(apply|apply now|apply here|apply online|apply for (this|the) (job|position|role|opening)|"
                         r"apply to (this|the) (job|position|role)|easy apply|quick apply|i'?m interested|start (your )?application|"
@@ -28,7 +28,7 @@ FORM_READY = "input[type=file], input[type=email]:visible"
 
 def mode(job):
     """How a job can be applied to: 'board' (Greenhouse/Lever/Ashby form), 'site' (the company's own site, tried),
-    'account' (needs an account: Watch mode only) or '' (not by Reachout)."""
+    'account' (needs an account: Watch mode only) or '' (not by Inkwell)."""
     url = job.get("apply_url") or job.get("url") or ""
     if job.get("ats") in NATIVE:
         return "board"

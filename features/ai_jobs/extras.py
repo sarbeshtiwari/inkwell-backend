@@ -66,15 +66,15 @@ def tailor(ws, job):
     jt = tokens(f"{job['title']} {jd}")
     ranked = sorted(lines, key=lambda l: -cosine(tokens(l), jt, {}))
     out = {"summary": "", "skills": kw["covered"] + [s for s in J().skill_hits(original, J().SKILLS) if s not in kw["covered"] and s not in ("C", "R")],
-           "highlights": ranked[:6], "sections": [], "dropped": [], "engine": "Reachout AI"}
+           "highlights": ranked[:6], "sections": [], "dropped": [], "engine": "Inkwell AI"}
     cfg = models.config(ws) if original.strip() else None
     if cfg:
         with models.use(cfg):
             try:
                 ordered(ws, cfg, original, job, jd, out)
-                out["engine"] = f"Reachout AI + {cfg['label']}"
+                out["engine"] = f"Inkwell AI + {cfg['label']}"
             except Exception as e:
-                print(f"[Reachout] tailored resume model step skipped: {e!r}", flush=True)
+                print(f"[Inkwell] tailored resume model step skipped: {e!r}", flush=True)
     if not out["summary"]:
         years = (ws.load("ai_match", {}).get("want") or {}).get("years")
         out["summary"] = (f"{(ws.load('ai_match', {}).get('want') or {}).get('role') or job['title']} with {years:g} years of experience"
@@ -232,7 +232,7 @@ def latex_resume(ws, job, t):
                 return None
         return pdf
     except Exception as e:
-        print(f"[Reachout] LaTeX resume skipped, using the HTML one: {e}", flush=True)
+        print(f"[Inkwell] LaTeX resume skipped, using the HTML one: {e}", flush=True)
         t.setdefault("checks", []).append(f"LaTeX: {str(e).splitlines()[0][:200]} The HTML resume was used instead.")
         return None
 
@@ -291,7 +291,7 @@ def render_pdf_html(page_html):
             finally:
                 b.close()
     except Exception as e:
-        print(f"[Reachout] PDF failed: {e!r}", flush=True)
+        print(f"[Inkwell] PDF failed: {e!r}", flush=True)
         return None
 
 
@@ -491,7 +491,7 @@ def make_prep(ws, jid):
     job = find_job(ws, jid)
     rep = (ws.load("ai_reports", {}) or {}).get(jid)
     out = prep_fallback(kind, job, rep)
-    out["engine"] = "Reachout AI"
+    out["engine"] = "Inkwell AI"
     cfg = models.config(ws)
     if cfg:
         with models.use(cfg):
@@ -509,9 +509,9 @@ def make_prep(ws, jid):
                 secs = [{"title": str(s.get("title", ""))[:80], "points": [str(x)[:400] for x in s.get("points", []) if x][:10]}
                         for s in r.get("sections", []) if isinstance(s, dict) and s.get("points")]
                 if secs:
-                    out = {"sections": secs[:8], "engine": f"Reachout AI + {cfg['label']}"}
+                    out = {"sections": secs[:8], "engine": f"Inkwell AI + {cfg['label']}"}
             except Exception as e:
-                print(f"[Reachout] prep model step skipped: {e!r}", flush=True)
+                print(f"[Inkwell] prep model step skipped: {e!r}", flush=True)
     out.update(kind=kind, at=time.time())
     with ws.lock:
         rows = ws.load("ai_prep", {}) or {}
@@ -542,4 +542,4 @@ def weekly_digest_all():
                    f"{ins['total']['rate']}% replied", "/app/ai-jobs", "info")
             ws.save("ai_digest", {"week": week, "at": time.time()})
         except Exception as e:
-            print(f"[Reachout] weekly digest skipped: {e!r}", flush=True)
+            print(f"[Inkwell] weekly digest skipped: {e!r}", flush=True)

@@ -3,12 +3,12 @@ common/resume.py (parse_sections, render, compile_pdf, unsafe_tex, pdf_page_coun
 
 Two ways in:
 - You keep your own resume as LaTeX: upload a .tex in Files (with Morrow's shapes: a subtitle line, a Summary
-  paragraph, "{\\bfseries Category:} items" Skills lines, itemize bullets). Reachout reorders it with the same
+  paragraph, "{\\bfseries Category:} items" Skills lines, itemize bullets). Inkwell reorders it with the same
   reorder-only rules and compiles it; your layout is kept exactly.
-- No .tex: Reachout fills Morrow's template from your PDF resume's parts (copied word for word) and compiles that.
+- No .tex: Inkwell fills Morrow's template from your PDF resume's parts (copied word for word) and compiles that.
 
 If the tailored version runs a page longer than the original, the original summary is put back; if it is still
-longer, or anything fails to compile, Reachout falls back to its HTML resume. Only runs where a LaTeX compiler is
+longer, or anything fails to compile, Inkwell falls back to its HTML resume. Only runs where a LaTeX compiler is
 installed (brew install tectonic); the .tex is checked for commands that could run programs or read files."""
 
 import os
@@ -178,11 +178,11 @@ def page_count(data):
     return n
 
 
-# --- Morrow's template filled from Reachout's resume parts ---------------------------------------------------------
+# --- Morrow's template filled from Inkwell's resume parts ---------------------------------------------------------
 
 def from_parts(prof, extra, t):
     """A .tex from the template: header from the profile, then summary, sections and skill groups from `t`
-    (Reachout's tailored resume, every piece copied from the resume)."""
+    (Inkwell's tailored resume, every piece copied from the resume)."""
     head = TEMPLATE.read_text(encoding="utf-8").split("\\begin{document}")[0]
     head = "\n".join(l for l in head.splitlines() if not l.lstrip().startswith("%"))  # its notes would match SUBTITLE
     e = escape

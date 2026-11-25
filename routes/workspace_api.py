@@ -111,7 +111,7 @@ def test_profile(ws):
     profile = ws.profile()
     try:
         server = smtp_connect(profile)
-        server.send_message(build_email(profile, profile["email"], "Reachout – test email",
+        server.send_message(build_email(profile, profile["email"], "Inkwell – test email",
                                         "Your email settings work. You can now send outreach emails.", []))
         server.quit()
     except smtplib.SMTPAuthenticationError:

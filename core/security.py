@@ -129,7 +129,7 @@ def guard():
 
 
 def app_csp(nonce):
-    """Policy for Reachout's own pages: scripts only from this server (or by per-request nonce) plus the
+    """Policy for Inkwell's own pages: scripts only from this server (or by per-request nonce) plus the
     editor's CDN; no plugins; can't be framed by other sites."""
     return ("default-src 'self'; "
             f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net; "

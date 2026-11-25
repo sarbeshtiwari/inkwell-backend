@@ -1,7 +1,7 @@
 """Learning from feedback (career-ops' outcome journal, calibrate and learn loop).
 
 Every "Good fit" / "Not for me" you give, every job you apply to, and what happens next (interview, offer,
-rejection, no reply) is a lesson. From them Reachout keeps a small preference model of what you like (kinds of
+rejection, no reply) is a lesson. From them Inkwell keeps a small preference model of what you like (kinds of
 role, title words, skills, companies, remote mode, seniority) and nudges future matches by up to ±15 points,
 saying why. Repeated reasons ("too senior", "pay too low") become suggested rules that wait for your approval:
 nothing is added to your rules on its own. Calibration shows whether higher scores actually led to interviews."""

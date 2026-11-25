@@ -33,7 +33,7 @@ def http(method, url, *, token=None, timeout=30, **kw):
     headers = kw.pop("headers", {})
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    headers.setdefault("User-Agent", "Reachout/1.0")
+    headers.setdefault("User-Agent", "Inkwell/1.0")
     try:
         return requests.request(method, url, headers=headers, timeout=timeout, **kw)
     except requests.RequestException as e:
@@ -49,7 +49,7 @@ def every(seconds, fn, name):
             try:
                 fn()
             except Exception as e:  # keep the loop alive
-                print(f"[Reachout] {name}: {e}", flush=True)
+                print(f"[Inkwell] {name}: {e}", flush=True)
     threading.Thread(target=loop, daemon=True, name=name).start()
 
 

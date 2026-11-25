@@ -1,4 +1,4 @@
-"""Contributing from Reachout's GitHub page: fork, comment on an issue, open a pull request from a fork."""
+"""Contributing from Inkwell's GitHub page: fork, comment on an issue, open a pull request from a fork."""
 
 from conftest import H
 

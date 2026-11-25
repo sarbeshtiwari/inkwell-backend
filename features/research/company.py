@@ -2,7 +2,7 @@
 industry, about, LinkedIn and size, each with the page it came from and a quote cut from that page.
 Adapted from Morrow (MIT, (c) 2026 Morrow contributors): common/company_research.py and common/company_store.py.
 
-With Claude Code / Kiro (Reachout on your own computer) the AI searches the web, as in Morrow. Otherwise Reachout
+With Claude Code / Kiro (Inkwell on your own computer) the AI searches the web, as in Morrow. Otherwise Inkwell
 reads the company's own site (home, about, careers, contact, team) and the configured AI picks facts from those
 pages. Either way every claim is re-checked against the real page (validate) and dropped if the page doesn't show
 it. Only public business information; never private details or guessed email patterns."""
@@ -147,7 +147,7 @@ SITE_PATHS = ("", "about", "about-us", "company", "careers", "jobs", "contact", 
 
 
 def site_pages(website):
-    """The company's own pages Reachout reads when no web-searching AI is available (at most 8)."""
+    """The company's own pages Inkwell reads when no web-searching AI is available (at most 8)."""
     if not public_url(website):
         return []
     root = f"{urlsplit(website).scheme}://{urlsplit(website).netloc}/"
@@ -177,7 +177,7 @@ def research_text(ws, company):
                            prompt_for(company), as_json=True, web=True, timeout=900)
     pages = site_pages(company.get("website", ""))
     if not pages:
-        raise ValueError("Add the company's website so Reachout can read its pages (web search needs Claude Code on your computer).")
+        raise ValueError("Add the company's website so Inkwell can read its pages (web search needs Claude Code on your computer).")
     if not cfg:
         return deterministic(company, pages)
     corpus = "\n\n".join(f"SOURCE {p['url']}\n{p['text'][:5000]}" for p in pages)
@@ -231,7 +231,7 @@ def run(uid, cid):
             rows = records(ws)
             rows[cid] = {**rows.get(cid, rec), "status": "failed", "error": message, "updated": time.time()}
             ws.save("company_research", rows)
-        print(f"[Reachout] company research {rec.get('name')}: {e!r}", flush=True)
+        print(f"[Inkwell] company research {rec.get('name')}: {e!r}", flush=True)
     finally:
         RUNNING.pop((uid, cid), None)
 

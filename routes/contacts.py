@@ -75,7 +75,7 @@ def sentmail_import(ws):
                 continue
             lines = "; ".join(f"{str(s.get('date'))[:10]} \u201c{s.get('subject') or 'no subject'}\u201d" for s in fresh[:5])
             ws.add_event(row["id"], "note", f"You emailed this address {len(fresh)} time{'s' if len(fresh) != 1 else ''} "
-                         f"before Reachout (from your Sent folder): {lines}.")
+                         f"before Inkwell (from your Sent folder): {lines}.")
             imported.update(lookup_hash("sent:" + str(s["mid"]).lower()) for s in fresh if s.get("mid"))
         ws.save("sent_imported", sorted(imported)[-20000:])
         return jsonify(added=added, updated=updated, history=0, bounced=0)

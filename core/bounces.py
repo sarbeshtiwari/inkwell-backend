@@ -194,6 +194,6 @@ def bounce_watcher():
                     try:
                         bridge_mod().with_deadline(240, check_bounces, Workspace(uid), days=4)
                     except Exception as e:
-                        print(f"[Reachout] bounce check skipped for an account: {getattr(e, 'message', e)}", flush=True)
+                        print(f"[Inkwell] bounce check skipped for an account: {getattr(e, 'message', e)}", flush=True)
         except Exception as e:
-            print(f"[Reachout] bounce watcher error: {e}", flush=True)
+            print(f"[Inkwell] bounce watcher error: {e}", flush=True)

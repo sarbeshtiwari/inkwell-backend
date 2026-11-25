@@ -68,7 +68,7 @@ def fetch_page(url):
             connection.sock = ssl.create_default_context().wrap_socket(connection.sock, server_hostname=part.hostname)
         try:
             connection.request('GET', (part.path or '/') + ('?' + part.query if part.query else ''),
-                               headers={'User-Agent': 'ReachoutCompanyResearch/1.0 (+evidence check)', 'Accept-Encoding': 'identity'})
+                               headers={'User-Agent': 'InkwellCompanyResearch/1.0 (+evidence check)', 'Accept-Encoding': 'identity'})
             response = connection.getresponse()
             if response.status in (301, 302, 303, 307, 308):
                 url = urljoin(url, response.getheader('Location', ''))

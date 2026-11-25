@@ -1,9 +1,9 @@
-"""Reachout Autofill (Chrome extension) API.
+"""Inkwell Autofill (Chrome extension) API.
 
 The extension fills job application forms in the user's own browser, with their details, resume and approved
 answers. The user reviews the form and presses Submit themselves: the extension never submits anything.
 
-It authenticates with a personal extension key (created and revoked in Reachout), never with the login cookie.
+It authenticates with a personal extension key (created and revoked in Inkwell), never with the login cookie.
 The key only reaches these endpoints: read the user's application details, download their resume, match answers
 to a form's questions, and save answers they typed for their review.
 """
@@ -40,16 +40,16 @@ def ext_workspace():
     core = C()
     m = re.fullmatch(r"Bearer ([0-9a-f]{32})\.([\w-]{30,80})", request.headers.get("Authorization", ""))
     if not m:
-        raise core.Invalid("Add your Reachout extension key in the extension.", status=401)
+        raise core.Invalid("Add your Inkwell extension key in the extension.", status=401)
     uid, secret = m.groups()
     if core.rate_limited(("ext", uid), 600, 3600):
         raise core.Invalid("Too many requests from the extension. Try again in a while.", status=429)
     if not core.M.users.find_one({"_id": uid}, {"_id": 1}):
-        raise core.Invalid("This extension key doesn't work any more. Create a new one in Reachout.", status=401)
+        raise core.Invalid("This extension key doesn't work any more. Create a new one in Inkwell.", status=401)
     ws = core.Workspace(uid)
     saved = ws.settings().get("ext_key_hash", "")
     if not saved or not hmac.compare_digest(saved, key_hash(secret)):
-        raise core.Invalid("This extension key doesn't work any more. Create a new one in Reachout.", status=401)
+        raise core.Invalid("This extension key doesn't work any more. Create a new one in Inkwell.", status=401)
     return ws
 
 
@@ -81,21 +81,21 @@ def ext_status(ws):
 
 def install_dir():
     from pathlib import Path
-    return Path.home() / "Documents" / "Reachout Autofill"
+    return Path.home() / "Documents" / "Inkwell Autofill"
 
 
 @bp.post("/api/extension/install")
 @login_required
 def install_local(ws):
-    """When Reachout runs on the user's own computer: unpack the extension into Documents and show it in Finder."""
+    """When Inkwell runs on the user's own computer: unpack the extension into Documents and show it in Finder."""
     import io
     import platform
     import subprocess
     import zipfile
     core = C()
     if not AI().can_hand_over():
-        raise core.Invalid("This works when Reachout runs on your own computer. Download the zip instead.")
-    pkg = core.WEB / "dist" / "downloads" / "reachout-autofill.zip"
+        raise core.Invalid("This works when Inkwell runs on your own computer. Download the zip instead.")
+    pkg = core.WEB / "dist" / "downloads" / "inkwell-autofill.zip"
     if not pkg.exists():
         raise core.Invalid("The extension package is missing. Rebuild the app (npm run build).", status=500)
     dest = install_dir()
@@ -172,7 +172,7 @@ def resume():
     ws = ext_workspace()
     name, data = AI().resume_file(ws)
     if not data:
-        raise C().Invalid("Upload your resume as a PDF in Reachout first.", status=404)
+        raise C().Invalid("Upload your resume as a PDF in Inkwell first.", status=404)
     return Response(data, mimetype="application/pdf", headers={"X-Filename": re.sub(r"[^\w.\-]", "_", name) or "resume.pdf",
                                                                "Cache-Control": "no-store"})
 
@@ -182,7 +182,7 @@ def cover():
     ws = ext_workspace()
     name, data = AI().cover_file(ws)
     if not data:
-        raise C().Invalid("No cover letter chosen in Reachout.", status=404)
+        raise C().Invalid("No cover letter chosen in Inkwell.", status=404)
     kind = "application/pdf" if name.lower().endswith(".pdf") else "application/octet-stream"
     return Response(data, mimetype=kind, headers={"X-Filename": re.sub(r"[^\w.\-]", "_", name) or "cover-letter.pdf",
                                                   "Cache-Control": "no-store"})

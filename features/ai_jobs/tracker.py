@@ -1,7 +1,7 @@
 """Pipeline tracking, after career-ops: one canonical status per evaluated job, the user's own rules (blacklist and
 dealbreakers), follow-up cadence for applications, and patterns in what got replies.
 
-Follow-ups are drafts only: Reachout never sends them. The user copies the text, or opens it in their own mail app,
+Follow-ups are drafts only: Inkwell never sends them. The user copies the text, or opens it in their own mail app,
 then marks it sent so the next one is scheduled."""
 
 import re
@@ -53,7 +53,7 @@ def learn(ws, jid, status):
         if job and job.get("title"):
             learning.record(ws, {**job, "id": jid}, status, jd=(ws.load("ai_jds", {}) or {}).get(jid, ""))
     except Exception as e:
-        print(f"[Reachout] learning skipped: {e!r}", flush=True)
+        print(f"[Inkwell] learning skipped: {e!r}", flush=True)
 
 
 @bp.put("/api/ai-jobs/status/<jid>")

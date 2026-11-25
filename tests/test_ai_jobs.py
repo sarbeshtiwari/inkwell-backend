@@ -1,4 +1,4 @@
-"""Reachout AI job match: the ranking engine, the LangChain pipeline, keys, consent and auto-apply rules."""
+"""Inkwell AI job match: the ranking engine, the LangChain pipeline, keys, consent and auto-apply rules."""
 
 import re
 import time
@@ -64,7 +64,7 @@ def test_pipeline_with_career_sites(monkeypatch):
     patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: JOBS if board == "acme" else [])
     patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
     st = AI.build_chain({}, ["career_sites"]).invoke({"profile": PROFILE, "use_llm": False})
-    assert st["ranked"][0]["title"] == "Full Stack Engineer" and st["engine"] == "Reachout AI" and st["considered"] == 4
+    assert st["ranked"][0]["title"] == "Full Stack Engineer" and st["engine"] == "Inkwell AI" and st["considered"] == 4
 
 
 def test_web_search_results_are_read_from_their_job_board(monkeypatch):
@@ -235,12 +235,12 @@ def test_extension_key_scopes_and_revocation(user):
 def test_unpacked_install_only_on_your_own_computer(user, monkeypatch, tmp_path):
     from features import extension as E
     c = user["client"]
-    monkeypatch.setattr(E, "install_dir", lambda: tmp_path / "Reachout Autofill")
+    monkeypatch.setattr(E, "install_dir", lambda: tmp_path / "Inkwell Autofill")
     monkeypatch.setattr(__import__("subprocess"), "run", lambda *a, **k: None)
     patch_shared(monkeypatch, "can_hand_over", src=AI, value=lambda: True)
-    if (A.WEB / "dist" / "downloads" / "reachout-autofill.zip").exists():
+    if (A.WEB / "dist" / "downloads" / "inkwell-autofill.zip").exists():
         r = c.post("/api/extension/install", json={}, headers=H)
-        assert r.status_code == 200 and (tmp_path / "Reachout Autofill" / "manifest.json").exists()
+        assert r.status_code == 200 and (tmp_path / "Inkwell Autofill" / "manifest.json").exists()
     patch_shared(monkeypatch, "can_hand_over", src=AI, value=lambda: False)
     assert c.post("/api/extension/install", json={}, headers=H).status_code == 400
 

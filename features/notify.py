@@ -1,5 +1,5 @@
 """Notifications: an in-app list that updates live (Server-Sent Events), browser push notifications that
-arrive even when the Reachout tab is closed, and — when Reachout runs on your own Mac — native macOS
+arrive even when the Inkwell tab is closed, and — when Inkwell runs on your own Mac — native macOS
 alerts that show even when the browser isn't open at all.
 
 Everything is stored encrypted in MongoDB (collection `notifications`, 90-day expiry); push subscriptions
@@ -80,12 +80,12 @@ def notify(uid, title, body="", link="", kind="info"):
         if not STREAMS.get(uid) and time.time() - STREAM_SEEN.get(uid, 0) > 20:  # no open tab: the page can't show it, so push
             threading.Thread(target=push_all, args=(uid, {**item, "tag": kind}), daemon=True).start()
     except Exception as e:
-        print(f"[Reachout] notify: {e}", flush=True)
+        print(f"[Inkwell] notify: {e}", flush=True)
 
 
 def mac_alert(title, body, sound=True):
     q = lambda s: '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'  # noqa: E731
-    script = f"display notification {q(body or ' ')} with title \"Reachout\" subtitle {q(title)}"
+    script = f"display notification {q(body or ' ')} with title \"Inkwell\" subtitle {q(title)}"
     if sound:
         script += ' sound name "Glass"'
     try:
@@ -135,7 +135,7 @@ def push_all(uid, payload):
             if e.response is not None and e.response.status_code in (404, 410):  # unsubscribed / expired
                 C().M.push_subs.delete_one({"_id": row["_id"]})
         except Exception as e:
-            print(f"[Reachout] push: {e}", flush=True)
+            print(f"[Inkwell] push: {e}", flush=True)
 
 
 # ---------------------------------------------------------------- API
@@ -185,7 +185,7 @@ def save_prefs(ws):
         if k in p:
             cur[k] = bool(p[k])
     if cur["mac"] and not mac_available():
-        raise C().Invalid("Mac alerts only work when Reachout runs on your own Mac.", "mac")
+        raise C().Invalid("Mac alerts only work when Inkwell runs on your own Mac.", "mac")
     ws.save("notify_prefs", cur)
     return jsonify(prefs=cur)
 

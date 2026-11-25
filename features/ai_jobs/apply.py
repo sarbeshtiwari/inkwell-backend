@@ -101,19 +101,19 @@ def resume_file(ws, job=None):
 
 
 def can_hand_over():
-    """A visible browser window can only be opened when Reachout runs on the user's own computer."""
+    """A visible browser window can only be opened when Inkwell runs on the user's own computer."""
     import platform
     return not C().PRODUCTION and (platform.system() in ("Darwin", "Windows") or bool(os.environ.get("DISPLAY")))
 
 
-# The site decided the submission came from an automated browser. Reachout respects that: it stops, never retries or
+# The site decided the submission came from an automated browser. Inkwell respects that: it stops, never retries or
 # hides itself, remembers the site, and hands the user a kit to apply from their own browser.
 BLOCKED = re.compile(r"flagged as (possible )?spam|couldn.t submit your application|unusual (activity|traffic)|"
                      r"automated (requests|traffic|submission)|are you a (robot|human)|verify you are human|access denied", re.I)
 
 
 BLOCKED_RESULT = {"state": "blocked", "detail": "This site flagged the automated submission. Apply from your own browser; "
-                                                "Reachout has your answers ready to copy."}
+                                                "Inkwell has your answers ready to copy."}
 
 
 def board_key(job):
@@ -162,7 +162,7 @@ def open_form(page, job, url, live):
 def apply_one(ws, job, submit=True, visible=False):
     """Open the job's public application form, fill it and (when nothing is left to answer) submit it.
 
-    visible=True (only when Reachout runs on the user's computer) does it in a browser window they can watch.
+    visible=True (only when Inkwell runs on the user's computer) does it in a browser window they can watch.
     On a company's own site the outcome is remembered for that site (siteapply.py)."""
     seen = {}
     res = _apply_one(ws, job, submit, visible, seen)
@@ -173,7 +173,7 @@ def apply_one(ws, job, submit=True, visible=False):
 
 
 ACCOUNT_RESULT = ("This site makes you sign in or create an account before applying. Use Watch mode to sign in yourself "
-                  "and Reachout fills the rest, or apply on the site.")
+                  "and Inkwell fills the rest, or apply on the site.")
 
 
 def _apply_one(ws, job, submit, visible, seen):
@@ -188,7 +188,7 @@ def _apply_one(ws, job, submit, visible, seen):
     from features.finder import host_is_public
     how = siteapply.mode(job)
     if not how or not host_is_public(urlsplit(url).hostname or "") or (how == "board" and (urlsplit(url).hostname or "") not in APPLY_HOSTS):
-        return {"state": "needs_you", "detail": "Reachout can't apply on this site. Apply on the site itself.", "url": url}
+        return {"state": "needs_you", "detail": "Inkwell can't apply on this site. Apply on the site itself.", "url": url}
     if how == "account" or (how == "site" and siteapply.known_account_site(ws, url)):
         return {"state": "needs_you", "url": url, "detail": ACCOUNT_RESULT}
     live = Live(ws.uid, job)
@@ -289,6 +289,6 @@ def record_application(ws, job):
         now = datetime.now().isoformat(timespec="seconds")
         rows[aid] = {"id": aid, "company": job["company"], "role": job["title"], "job_id": "", "url": job["url"],
                      "portal": f"Auto-apply ({job['ats'].capitalize() or job.get('via') or siteapply.host(job['url'])})", "created": now,
-                     "history": [{"status": "applied", "at": now, "source": "you", "subject": "Applied by Reachout AI"}]}
+                     "history": [{"status": "applied", "at": now, "source": "you", "subject": "Applied by Inkwell AI"}]}
         apps.recompute(rows[aid])
         ws.save("applications", rows)

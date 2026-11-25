@@ -43,7 +43,7 @@ def ollama_up():
 
 
 def local_allowed():
-    """A server on this computer can only be used when Reachout itself runs on the user's computer."""
+    """A server on this computer can only be used when Inkwell itself runs on the user's computer."""
     return not C().PRODUCTION
 
 
@@ -52,7 +52,7 @@ def cli_ready(pid):
 
 
 def default_provider():
-    """Claude Code when Reachout runs on a computer that has it, otherwise the local Ollama model."""
+    """Claude Code when Inkwell runs on a computer that has it, otherwise the local Ollama model."""
     return "claude_cli" if cli_ready("claude_cli") else "ollama"
 
 
@@ -135,7 +135,7 @@ def chat(cfg, system, human, as_json=False, max_tokens=700, temperature=0.2, web
     else:
         headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {cfg['key']}"} if cfg.get("key") else {})}
         if cfg["provider"] == "openrouter":
-            headers.update({"HTTP-Referer": "https://reachout-web.netlify.app", "X-Title": "Reachout"})
+            headers.update({"HTTP-Referer": "https://reachout-web.netlify.app", "X-Title": "Inkwell"})
         r = requests.post(cfg["base"] + "/chat/completions", timeout=90, headers=headers, json={
             "model": cfg["model"], "max_tokens": max_tokens, "temperature": temperature,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": human}]})

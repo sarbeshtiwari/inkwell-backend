@@ -27,7 +27,7 @@ OVERLAY_JS = r"""
         document.documentElement.appendChild(bar);
       }
       bar.innerHTML = "";
-      const t = document.createElement("span"); t.textContent = "✦ Reachout AI · " + msg; t.style.flex = "1"; bar.appendChild(t);
+      const t = document.createElement("span"); t.textContent = "✦ Inkwell AI · " + msg; t.style.flex = "1"; bar.appendChild(t);
       for (const [id, label] of buttons || []) {
         const b = document.createElement("button"); b.textContent = label; b.type = "button";
         b.style.cssText = "border:0;border-radius:9px;padding:7px 12px;font:600 13px system-ui;cursor:pointer;"
@@ -46,7 +46,7 @@ LOGIN_WALL = re.compile(r"\b(sign in|log ?in|create (an |your )?account|sign up|
 
 
 class Watch:
-    """A visible browser on the user's computer: each job opens in a new tab, Reachout fills and submits, and pauses
+    """A visible browser on the user's computer: each job opens in a new tab, Inkwell fills and submits, and pauses
     with a bar at the bottom of the page whenever the user is needed (sign-in, account creation, questions, CAPTCHA)."""
 
     def __init__(self, pw, uid):
@@ -88,7 +88,7 @@ class Watch:
             except Exception:
                 pass
             page.wait_for_timeout(1000)
-            if int(time.time()) % 2 == 0:  # keep the live view in Reachout close to what the browser shows
+            if int(time.time()) % 2 == 0:  # keep the live view in Inkwell close to what the browser shows
                 live(page, "")
         return "timeout"
 
@@ -162,7 +162,7 @@ def watch_apply(w, ws, job, values, path):
         while True:
             if CONFIRMED.search(body_text(page)):  # the user already submitted it themselves
                 live(page, "Submitted ✓")
-                return {"state": "applied", "url": url, "detail": "You submitted it in the Reachout window."}
+                return {"state": "applied", "url": url, "detail": "You submitted it in the Inkwell window."}
             quiet(page, "() => document.querySelectorAll('[style*=\"e5484d\"]').forEach(e => e.style.outline = '')")
             try:
                 left = len(questions_left(page, mark=True))
@@ -195,7 +195,7 @@ def watch_apply(w, ws, job, values, path):
                     live(page, "Stopped: the site flagged the automated submission")
                     return {**BLOCKED_RESULT, "url": job["url"]}
                 live(page, "Submitted ✓")
-                return {"state": "applied", "url": url, "detail": "You submitted it in the Reachout window."}
+                return {"state": "applied", "url": url, "detail": "You submitted it in the Inkwell window."}
             if a in ("skip", "closed", "timeout"):
                 return {"state": "needs_you", "url": url, "questions": missing[:40], "detail": "Skipped: questions were left unanswered."}
         btn = page.locator("button[type=submit]:visible, input[type=submit]:visible, button:visible:has-text('Submit application'), "
@@ -204,7 +204,7 @@ def watch_apply(w, ws, job, values, path):
             a = w.wait_for_user(page, live, "Couldn't find the Submit button. Submit the form yourself, or press Continue to move on.",
                                 done=lambda p: bool(CONFIRMED.search(body_text(p))))
             if a == "done":
-                return {"state": "applied", "url": url, "detail": "You submitted it in the Reachout window."}
+                return {"state": "applied", "url": url, "detail": "You submitted it in the Inkwell window."}
             return {"state": "needs_you", "url": url, "detail": "Couldn't find the Submit button. Submit it on the site."}
         w.bar(page, "Submitting your application…")
         live(page, "Submitting…")
@@ -216,7 +216,7 @@ def watch_apply(w, ws, job, values, path):
             if CONFIRMED.search(body) or BLOCKED.search(body) or CODE_STEP.search(body):
                 break
         if CODE_STEP.search(body) and not CONFIRMED.search(body):  # e.g. Greenhouse emails a security code to the applicant
-            a = w.wait_for_user(page, live, "The site emailed you a security code. Enter it here and submit, then Reachout moves on.",
+            a = w.wait_for_user(page, live, "The site emailed you a security code. Enter it here and submit, then Inkwell moves on.",
                                 done=lambda p: bool(CONFIRMED.search(body_text(p))))
             if a == "done":
                 live(page, "Submitted ✓")
@@ -224,7 +224,7 @@ def watch_apply(w, ws, job, values, path):
             return {"state": "needs_you", "url": url, "detail": "The site asked for the security code it emailed you. Finish it on the site."}
         if BLOCKED.search(body):
             mark_blocked(ws, job)
-            w.bar(page, "This site flagged the automated submission. Reachout stopped; apply from your own browser.")
+            w.bar(page, "This site flagged the automated submission. Inkwell stopped; apply from your own browser.")
             live(page, "Stopped: the site flagged the automated submission")
             page.wait_for_timeout(4000)
             return {**BLOCKED_RESULT, "url": job["url"]}
@@ -279,7 +279,7 @@ def run_watch(uid, picks):
                     try:
                         res = closed_result(job) or watch_apply(w, ws, job, values, paths.get(job["id"], path))
                     except Exception as e:
-                        print(f"[Reachout] watch apply error ({job.get('company')}): {e!r}", flush=True)
+                        print(f"[Inkwell] watch apply error ({job.get('company')}): {e!r}", flush=True)
                         res = {"state": "needs_you", "url": job["url"], "error": repr(e)[:300],
                                "detail": "The window was closed or the page changed. Apply on the site."}
                     res["at"] = time.time()
@@ -306,5 +306,5 @@ def run_watch(uid, picks):
         HANDOVER.pop(uid, None)
         from features.notify import notify
         ok = sum(1 for j in picks if (ws.load("ai_applied", {}).get(j["id"]) or {}).get("state") == "applied")
-        notify(uid, f"Reachout AI applied to {ok} job{'s' if ok != 1 else ''}", f"{len(picks) - ok} still need you.",
+        notify(uid, f"Inkwell AI applied to {ok} job{'s' if ok != 1 else ''}", f"{len(picks) - ok} still need you.",
                "/app/ai-jobs", "application")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Reachout – multi-user web app for personalised outreach over WhatsApp and email.
+Inkwell – multi-user web app for personalised outreach over WhatsApp and email.
 
 Storage: everything lives in MongoDB (MONGODB_URI, database MONGODB_DB). Every
 user record, contact list, template, profile, setting, history entry, enquiry,

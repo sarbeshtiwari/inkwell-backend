@@ -98,9 +98,9 @@ def wa_expiry_watcher():
         try:
             n = expire_wa_sessions()
             if n:
-                print(f"[Reachout] removed {n} expired WhatsApp login(s).", flush=True)
+                print(f"[Inkwell] removed {n} expired WhatsApp login(s).", flush=True)
         except Exception as e:
-            print(f"[Reachout] WhatsApp expiry error: {e}", flush=True)
+            print(f"[Inkwell] WhatsApp expiry error: {e}", flush=True)
 
 
 SLOTS = threading.BoundedSemaphore(MAX_BROWSERS)

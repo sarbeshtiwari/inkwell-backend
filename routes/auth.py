@@ -75,10 +75,10 @@ def issue_otp(email, purpose, extra=None):
     otp_throttle(eh)
     code = f"{secrets.randbelow(10**6):06d}"
     send_system_email(
-        email, f"{code} is your Reachout code",
-        {"login": f"Your Reachout login code is {code}.",
-         "signup": f"Welcome to Reachout. Your sign-up code is {code}.",
-         "delete": f"Your code to permanently delete your Reachout account is {code}. "
+        email, f"{code} is your Inkwell code",
+        {"login": f"Your Inkwell login code is {code}.",
+         "signup": f"Welcome to Inkwell. Your sign-up code is {code}.",
+         "delete": f"Your code to permanently delete your Inkwell account is {code}. "
                    f"If you didn't ask for this, ignore this email."}[purpose]
         + f"\n\nIt expires in {OTP_TTL // 60} minutes. Never share this code with anyone.")
     M.otps.replace_one({"_id": eh}, {"purpose": purpose, "code_hash": otp_hash(eh, code), "data": seal(extra or {}),
@@ -130,7 +130,7 @@ def request_code():
             raise Invalid("Please tick the box to accept the terms.", "agree")
         if not user and not ALLOW_SIGNUP:
             otp_throttle(lookup_hash(email))  # same response as a registered email: don't reveal who has an account
-            send_system_email(email, "Reachout sign-ups are closed", "Thanks for your interest in Reachout. "
+            send_system_email(email, "Inkwell sign-ups are closed", "Thanks for your interest in Inkwell. "
                               "New sign-ups are closed right now; we'll be glad to have you when they reopen.")
             return jsonify(ok=True, resend_in=OTP_COOLDOWN, dev=DEV_OTP)
         # An existing account just gets a login code, so sign-up doesn't reveal who is registered.
@@ -140,8 +140,8 @@ def request_code():
     else:
         # Same response (and the same cooldown) for unknown emails, so this can't be used to check who has an account.
         otp_throttle(lookup_hash(email))
-        send_system_email(email, "Reachout sign-in attempt",
-                          "Someone tried to log in to Reachout with this email, but there's no account for it. "
+        send_system_email(email, "Inkwell sign-in attempt",
+                          "Someone tried to log in to Inkwell with this email, but there's no account for it. "
                           "If it was you, sign up instead.")
     return jsonify(ok=True, resend_in=OTP_COOLDOWN, dev=DEV_OTP)
 

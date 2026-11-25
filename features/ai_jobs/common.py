@@ -28,7 +28,7 @@ RUN_SECONDS = 8 * 60
 MAX_RESULTS = 40
 
 
-UA = {"User-Agent": "ReachoutJobMatch/1.0 (+https://reachout-web.netlify.app)"}
+UA = {"User-Agent": "InkwellJobMatch/1.0 (+https://reachout-web.netlify.app)"}
 
 
 RUNS, APPLYING = {}, {}

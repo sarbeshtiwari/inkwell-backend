@@ -73,7 +73,7 @@ def repositories(seen):
 
 
 def job_report(ws):
-    """Reachout's own report (Morrow's report.md, built from data only): yesterday's applications, replies,
+    """Inkwell's own report (Morrow's report.md, built from data only): yesterday's applications, replies,
     follow-ups due and strong matches you haven't applied to."""
     from features.ai_jobs.tracker import due_followups, insights
     out = {"applied": 0, "heard": 0, "interviews": 0, "followups": [], "matches": []}
@@ -147,7 +147,7 @@ def build_async(uid, notify_user=False):
                 notify(uid, "Your morning briefing is ready", f"Day {b['goal']['day']}: {b['goal']['title']} · "
                        f"{len(b['report']['followups'])} follow-ups · {len(b['report']['matches'])} strong matches", "/app/learning", "info")
         except Exception as e:
-            print(f"[Reachout] briefing: {e!r}", flush=True)
+            print(f"[Inkwell] briefing: {e!r}", flush=True)
         finally:
             BUILDING.discard(uid)
     threading.Thread(target=run, daemon=True, name=f"briefing-{uid[:6]}").start()

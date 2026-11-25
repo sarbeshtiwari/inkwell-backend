@@ -59,7 +59,7 @@ def company_from_domain(domain):
 
 
 def already_logged(ws, addr, when_ts, rid=None):
-    """True if history already has an email to this address within 15 minutes (e.g. a Reachout campaign send)."""
+    """True if history already has an email to this address within 15 minutes (e.g. a Inkwell campaign send)."""
     q = {"uid": ws.uid, "ts": {"$gte": when_ts - 900, "$lte": when_ts + 900}}
     if rid:
         q["rid"] = rid
@@ -95,7 +95,7 @@ def scan_sent(ws, days):
                 h = email_lib.message_from_bytes(item[1], policy=email_policy)
                 mid = str(h.get("Message-ID", "")).strip()
                 if re.search(r"\.ro@", mid):
-                    continue  # sent by Reachout itself: already in your history
+                    continue  # sent by Inkwell itself: already in your history
                 try:
                     when = parsedate_to_datetime(str(h.get("Date"))).astimezone().replace(tzinfo=None)
                 except (TypeError, ValueError):
@@ -124,7 +124,7 @@ def scan_sent(ws, days):
     for p in people.values():
         p["sends"] = [x for x in p["sends"] if not already_logged(ws, p["email"], datetime.fromisoformat(x["date"]).timestamp())]
         if not p["sends"]:
-            continue  # every email to this person is already in Reachout's history
+            continue  # every email to this person is already in Inkwell's history
         p["count"] = len(p["sends"])
         p["sends"].sort(key=lambda x: x["date"], reverse=True)
         domain = p["email"].split("@")[1]

@@ -65,7 +65,7 @@ def test_website_publish_contact_and_leads(user, anon):
     c.get("/api/site")
     assert c.post("/api/site/publish", json={}, headers=H).get_json()["online"]
     html = anon.get(f"/p/{slug}").get_data(as_text=True)
-    assert "Powered by <b>Reachout</b>" in html and 'name="subject"' in html
+    assert "Powered by <b>Inkwell</b>" in html and 'name="subject"' in html
     r = anon.post(f"/api/site/public/{slug}/contact", json={"name": "Asha HR", "email": "asha@corp.example", "subject": "SDE role",
                                                            "message": "Hi, we have an opening for you.", "elapsed_ms": 5000}, headers=H)
     assert r.status_code == 200

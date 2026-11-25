@@ -114,7 +114,7 @@ def drop_file(ref):
             try:
                 CLOUD and CLOUD.destroy(pid)
             except Exception as e:  # a leftover object costs a little space; never block the user's action
-                print(f"[Reachout] Couldn't remove {pid} from Cloudinary: {e}", flush=True)
+                print(f"[Inkwell] Couldn't remove {pid} from Cloudinary: {e}", flush=True)
         return
     try:
         M.files.delete(ref)
