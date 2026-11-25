@@ -64,8 +64,9 @@ def status(ws):
 @bp.put("/api/li/config")
 @login_required
 def save_config(ws):
-    if not C().is_admin(ws.uid):
-        raise C().Invalid("Only the site owner can set up the LinkedIn app.", status=403)
+    from infra import audit, rbac
+    rbac.check(ws.uid, "admin.integrations", target="linkedin.config", message="Only the site owner can set up the LinkedIn app.")
+    audit.record("integration.linkedin.configure", ws.uid, target="linkedin.config")
     p = C().body()
     cid, secret = str(p.get("client_id") or "").strip(), str(p.get("client_secret") or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9]{8,40}", cid):

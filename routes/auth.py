@@ -265,7 +265,9 @@ def logout_everywhere(ws):
 @login_required
 def me(ws):
     u = find_user(uid=ws.uid)
-    return jsonify(name=u["name"], email=u["email"], is_admin=is_admin(ws.uid), has_password=bool(password_of(ws.uid)), stages=STAGES,
+    from infra import rbac
+    return jsonify(name=u["name"], email=u["email"], is_admin=is_admin(ws.uid), role=rbac.role_of(ws.uid),
+                   permissions=sorted(rbac.permissions_of(ws.uid)), has_password=bool(password_of(ws.uid)), stages=STAGES,
                    can_track_opens=can_track_opens(), daily_limit=DAILY_LIMIT, sent_today=ws.sent_today(),
                    min_wa_delay=MIN_WA_DELAY, max_files_mb=MAX_FILES_MB, max_file_mb=MAX_FILE_MB,
                    allowed_docs=sorted(ALLOWED_DOCS), whatsapp=WHATSAPP_ENABLED)

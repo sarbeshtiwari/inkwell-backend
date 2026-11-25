@@ -162,8 +162,8 @@ def run_update(target=None):
 def guard(core, ws):
     if not enabled():
         raise core.Invalid("Updates from here work when Inkwell runs from its git folders on your own computer.", status=400)
-    if not core.is_admin(ws.uid):
-        raise core.Invalid("Only the owner of this Inkwell can update it.", status=403)
+    from infra import rbac
+    rbac.check(ws.uid, "admin.update_app", target="update", message="Only the owner of this Inkwell can update it.")
 
 
 @bp.get("/api/update")

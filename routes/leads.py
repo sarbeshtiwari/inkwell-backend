@@ -82,8 +82,8 @@ def create_lead():
 def lead_scope(ws):
     """Whose enquiries a request is about: your own website's (default), or Inkwell's own site (admins only)."""
     if request.args.get("scope") == "site":
-        if not is_admin(ws.uid):
-            raise Invalid("Only the site owner can see this.", status=403)
+        from infra import rbac
+        rbac.check(ws.uid, "admin.site_leads", target="leads:site", message="Only the site owner can see this.")
         return {"uid": {"$exists": False}}
     return {"uid": ws.uid}
 

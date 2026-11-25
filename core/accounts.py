@@ -72,6 +72,10 @@ def init_storage():
     M.sessions.create_index("uid")
     M.ratelimits.create_index("expire_at", expireAfterSeconds=0)
     M.queue.create_index("uid")
+    from infra import audit, rbac
+    audit.ensure_indexes()
+    rbac.ensure_indexes()
+    rbac.bootstrap()
     if SQLITE_PATH.exists() and M.users.estimated_document_count() == 0:
         from migrations import (
             migrate_sqlite,  # (late: migrations uses the layers above)
@@ -194,12 +198,6 @@ def delete_user_data(uid):
 
 
 def is_admin(uid):
-    user = find_user(uid=uid)
-    if not user:
-        return False
-    if ADMIN_EMAILS:
-        return user["email"] in ADMIN_EMAILS
-    if PRODUCTION:
-        return False
-    first = M.users.find_one({}, {"_id": 1}, sort=[("created", ASCENDING)])
-    return bool(first) and first["_id"] == uid
+    """Kept for existing callers: true for the Super Admin role (see infra/rbac.py)."""
+    from infra import rbac
+    return rbac.role_of(uid) == rbac.SUPER_ADMIN

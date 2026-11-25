@@ -22,12 +22,33 @@ if SENTRY_DSN:
                 req["headers"][k] = "[removed]"
         req.pop("data", None)
         req.pop("cookies", None)
+        from infra.redact import secrets
+        for key in ("message", "logentry", "exception", "extra", "breadcrumbs"):
+            if key in event:
+                event[key] = secrets(event[key])
         return event
     sentry_sdk.init(dsn=SENTRY_DSN, send_default_pii=False, traces_sample_rate=0.0, before_send=_scrub,
                     environment="production" if os.environ.get("APP_ENV") == "production" else "development")
 
 
 app = Flask("app", root_path=str(BACKEND), static_folder=None)
+
+
+def _install_redaction():
+    """Every log record (Flask, werkzeug, libraries) passes through secret redaction before it is written."""
+    import logging
+
+    from infra.redact import RedactingFilter
+    f = RedactingFilter()
+    for name in ("", "app", "werkzeug", "gunicorn.error", "gunicorn.access"):
+        logging.getLogger(name).addFilter(f)
+    for h in logging.getLogger().handlers + app.logger.handlers:
+        h.addFilter(f)
+    from infra.redact import install_stream_redaction
+    install_stream_redaction()  # print() logs and tracebacks too
+
+
+_install_redaction()
 
 
 app.config.update(
