@@ -29,7 +29,11 @@ from core.workspace import Workspace
 
 @app.errorhandler(Invalid)
 def on_invalid(e):
-    return jsonify(error=e.message, field=e.field), e.status
+    resp = jsonify(error=e.message, field=e.field)
+    retry = getattr(e, "retry_after", None)
+    if retry:  # retryable (e.g. the account is busy): same body, plus when to try again
+        resp.headers["Retry-After"] = str(retry)
+    return resp, e.status
 
 
 @app.errorhandler(Undecryptable)

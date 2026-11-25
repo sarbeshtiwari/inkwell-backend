@@ -134,24 +134,28 @@ def add_items(ws):
     names = [str(x) for x in (p.get("repos") or []) if re.fullmatch(r"[\w.-]+/[\w.-]+", str(x))][:30]
     if not names:
         raise C().Invalid("Pick at least one repository.")
+    # GitHub first, without holding the account lock (one or more calls per repo, up to 30 repos).
+    have = {i["repo"] for i in cfg(ws)["items"]}
+    fetched = []
+    for full in names:
+        if full in have or any(f["repo"] == full for f in fetched):
+            continue
+        owner, repo = full.split("/")
+        info = ghub.gh(ws, "GET", f"/repos/{owner}/{repo}")
+        live, source = detect_live(ws, owner, repo, info)
+        title = re.sub(r"[-_]+", " ", info["name"]).strip()
+        fetched.append({"repo": full, "title": title[:1].upper() + title[1:], "description": info.get("description") or "",
+                        "tags": [t for t in (info.get("topics") or [])][:8] or ([info["language"]] if info.get("language") else []),
+                        "live_url": live, "live_source": source, "repo_url": info["html_url"] if not info.get("private") else "",
+                        "private": info.get("private", False), "image": og_image(owner, repo), "featured": False, "hidden": False,
+                        "language": info.get("language") or "", "stars": info.get("stargazers_count", 0), "updated_at": info.get("pushed_at")})
+    # Then apply to the portfolio as it is *now* (re-read under the lock): changes made meanwhile are kept, and a repo
+    # added meanwhile isn't added twice.
     with ws.lock:
         c = cfg(ws)
         have = {i["repo"] for i in c["items"]}
-        added = []
-        for full in names:
-            if full in have:
-                continue
-            owner, repo = full.split("/")
-            info = ghub.gh(ws, "GET", f"/repos/{owner}/{repo}")
-            live, source = detect_live(ws, owner, repo, info)
-            title = re.sub(r"[-_]+", " ", info["name"]).strip()
-            item = {"repo": full, "title": title[:1].upper() + title[1:], "description": info.get("description") or "",
-                    "tags": [t for t in (info.get("topics") or [])][:8] or ([info["language"]] if info.get("language") else []),
-                    "live_url": live, "live_source": source, "repo_url": info["html_url"] if not info.get("private") else "",
-                    "private": info.get("private", False), "image": og_image(owner, repo), "featured": False, "hidden": False,
-                    "language": info.get("language") or "", "stars": info.get("stargazers_count", 0), "updated_at": info.get("pushed_at")}
-            c["items"].append(item)
-            added.append(item)
+        added = [item for item in fetched if item["repo"] not in have]
+        c["items"].extend(added)
         ws.save("portfolio", c)
     return jsonify(items=c["items"], added=len(added))
 

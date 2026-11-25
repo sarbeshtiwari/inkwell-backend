@@ -24,10 +24,21 @@ for something global (a background loop). Holding it means holding a *lease*:
 If MongoDB is unavailable, acquiring fails with LockUnavailable (no silent fallback to a process-local lock), and a
 held lease can't be renewed, so its holder stops at its next `ensure()` instead of carrying on unprotected.
 
-Settings (seconds): LOCK_LEASE_SECONDS (30), LOCK_RENEW_SECONDS (10), LOCK_SAFETY_SECONDS (5), LOCK_TXN_SECONDS (10).
+Waiting for the account lock (`with ws.lock:`) is bounded: LOCK_WAIT_INTERACTIVE_SECONDS (18) inside a web request,
+so the answer (409 + Retry-After) arrives before the proxy gives up, and LOCK_WAIT_BACKGROUND_SECONDS (45) in background
+work, long enough to outlast a crashed holder's lease. The wait covers both the in-process queue and the shared lease,
+and happens before the protected code runs: a request that times out has read and changed nothing.
+
+Measurements (metrics(); slow waits, long holds and failures are also logged on `inkwell.locks`): wait time, hold time,
+timeouts and database failures per lock kind, with the operation (endpoint or thread) and the request id. Never the
+account id or anything from the account.
+
+Settings (seconds): LOCK_LEASE_SECONDS (30), LOCK_RENEW_SECONDS (10), LOCK_SAFETY_SECONDS (5), LOCK_TXN_SECONDS (10),
+LOCK_WAIT_INTERACTIVE_SECONDS (18), LOCK_WAIT_BACKGROUND_SECONDS (45), LOCK_SLOW_WAIT_SECONDS (1), LOCK_SLOW_HOLD_SECONDS (5).
 """
 
 import datetime as dt
+import logging
 import os
 import random
 import re
@@ -36,6 +47,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections import deque
 
 import pymongo
 from pymongo import ReadPreference, ReturnDocument, WriteConcern
@@ -54,7 +66,12 @@ def _seconds(name, default):
 
 
 LEASE_SECONDS = _seconds("LOCK_LEASE_SECONDS", 30.0)
-TXN_SECONDS = _seconds("LOCK_TXN_SECONDS", 10.0)    # client-side limit for one protected write, retries included
+TXN_SECONDS = _seconds("LOCK_TXN_SECONDS", 10.0)
+WAIT_INTERACTIVE = _seconds("LOCK_WAIT_INTERACTIVE_SECONDS", 18.0)  # web requests: answer before the proxy times out (~26 s)
+WAIT_BACKGROUND = _seconds("LOCK_WAIT_BACKGROUND_SECONDS", 45.0)    # background work: outlasts a crashed holder's lease
+SLOW_WAIT = _seconds("LOCK_SLOW_WAIT_SECONDS", 1.0)
+SLOW_HOLD = _seconds("LOCK_SLOW_HOLD_SECONDS", 5.0)
+RETRY_AFTER = 2    # client-side limit for one protected write, retries included
 ACQUIRE_ATTEMPT_MS = 500                            # one acquire attempt waits at most this long on a busy record
 RENEW_SECONDS = _seconds("LOCK_RENEW_SECONDS", 10.0)
 SAFETY_SECONDS = _seconds("LOCK_SAFETY_SECONDS", 5.0)
@@ -64,10 +81,19 @@ UID_OK = re.compile(r"^[\w-]{1,64}$")
 
 
 class LockTimeout(Invalid):
-    """Someone else holds the lock and it didn't come free in time."""
+    """Someone else holds the lock and it didn't come free in time (409)."""
 
     def __init__(self, message="This is busy right now. Try again in a moment."):
         super().__init__(message, status=409)
+
+
+class AccountBusy(LockTimeout):
+    """The account lock (`ws.lock`) didn't come free in time. Retryable: answered as 409 with Retry-After."""
+
+    retry_after = RETRY_AFTER
+
+    def __init__(self, message="Your account is busy with another change. Try again in a moment."):
+        super().__init__(message)
 
 
 class LockUnavailable(Invalid):
@@ -110,6 +136,8 @@ class Lease:
         self._renewed = time.monotonic()
         self._lost = self._released = False
         self._mu = threading.Lock()
+        self._held_since = time.monotonic()
+        self._op = _operation()
 
     def __repr__(self):
         return f"<Lease {self.id} fence={self.fence}{' lost' if self._lost else ''}{' released' if self._released else ''}>"
@@ -153,6 +181,7 @@ class Lease:
             if self._released:
                 return
             self._released = True
+        _record_hold(self.resource, time.monotonic() - self._held_since, self._op)
         _RENEWER.discard(self)
         try:
             with pymongo.timeout(5):
@@ -194,23 +223,28 @@ def _take(lid, uid, resource, ttl, token):
     return doc
 
 
-def acquire(resource, uid=None, *, wait=0.0, ttl=None, poll=0.1, busy="This is busy right now. Try again in a moment."):
+def acquire(resource, uid=None, *, wait=0.0, ttl=None, poll=0.1, busy="This is busy right now. Try again in a moment.",
+            _queued=0.0):
     """Take the lock, waiting at most `wait` seconds. Returns a Lease (use it as a context manager).
     Raises LockTimeout if it stays taken, LockUnavailable if the database can't be reached."""
     lid, ttl = lock_id(resource, uid), ttl or LEASE_SECONDS
-    deadline = time.monotonic() + max(0.0, wait)
+    start = time.monotonic()
+    deadline = start + max(0.0, wait)
     while True:
         token, t0 = uuid.uuid4().hex, time.monotonic()
         try:
             doc = _take(lid, uid, resource, ttl, token)
         except PyMongoError as e:
+            _record_wait(resource, time.monotonic() - start + _queued, "unavailable")
             raise LockUnavailable() from e
         if doc is not None and doc.get("token") == token:
             lease = Lease(doc, ttl, t0)
             _RENEWER.add(lease)
+            _record_wait(resource, time.monotonic() - start + _queued, "acquired", quiet=wait == 0 and not _queued)
             return lease
         left = deadline - time.monotonic()
-        if left <= 0:
+        if left <= 0:  # no new attempt starts after the deadline (one in flight takes ≤ ACQUIRE_ATTEMPT_MS + a round trip)
+            _record_wait(resource, time.monotonic() - start + _queued, "timeout", quiet=wait == 0 and not _queued)
             raise LockTimeout(busy)
         time.sleep(min(left, poll * (0.5 + random.random())))
 
@@ -296,6 +330,83 @@ def guarded_write(uid, fn):
         raise LockUnavailable("Couldn't confirm the change was saved (database problem). Try again.") from e
 
 
+# ---- measurements ---------------------------------------------------------------------------------------------
+
+LOG = logging.getLogger("inkwell.locks")
+_METRICS, _METRICS_MU = {}, threading.Lock()
+
+
+def _kind(resource):
+    """Low-cardinality name for a lock: "workspace", "op:send", "loop:send-queue" (never ids or keys)."""
+    parts = resource.split(":")
+    return ":".join(parts[:2]) if parts[0] in ("op", "loop") else parts[0]
+
+
+def _operation():
+    """What is taking the lock: the Flask endpoint in a request, else the thread's name. Plus the request id."""
+    try:
+        from flask import has_request_context, request
+
+        from infra.audit import request_id
+        if has_request_context():
+            return (request.endpoint or request.path.split("?")[0])[:80], request_id()
+    except Exception:  # measurement never breaks locking
+        pass
+    return threading.current_thread().name[:80], ""
+
+
+def _bucket(resource):
+    k = _kind(resource)
+    with _METRICS_MU:
+        m = _METRICS.get(k)
+        if m is None:
+            m = _METRICS[k] = {"wait": deque(maxlen=2000), "hold": deque(maxlen=2000), "acquired": 0, "timeouts": 0,
+                               "unavailable": 0}
+        return k, m
+
+
+def _record_wait(resource, seconds, outcome, quiet=False):
+    k, m = _bucket(resource)
+    with _METRICS_MU:
+        m["wait"].append(seconds)
+        m["acquired" if outcome == "acquired" else "timeouts" if outcome == "timeout" else "unavailable"] += 1
+    if quiet:
+        return  # try_acquire: "busy" is a normal answer, not a failure
+    op, rid = _operation()
+    if outcome != "acquired":
+        LOG.warning("lock %s %s after %.0f ms (op=%s request=%s)", k, outcome, seconds * 1000, op, rid or "-")
+    elif seconds >= SLOW_WAIT:
+        LOG.warning("lock %s slow wait %.0f ms (op=%s request=%s)", k, seconds * 1000, op, rid or "-")
+
+
+def _record_hold(resource, seconds, op):
+    k, m = _bucket(resource)
+    with _METRICS_MU:
+        m["hold"].append(seconds)
+    if seconds >= SLOW_HOLD and not k.startswith(("op", "loop")):  # tasks and loops hold their lease by design
+        LOG.warning("lock %s held %.0f ms (op=%s request=%s)", k, seconds * 1000, op[0], op[1] or "-")
+
+
+def metrics():
+    """Per lock kind: acquired / timeouts / unavailable counts and wait/hold median, p95, p99 in ms (last 2000)."""
+    def pct(xs):
+        xs = sorted(xs)
+        if not xs:
+            return None
+        at = lambda p: round(xs[min(len(xs) - 1, int(round(p * (len(xs) - 1))))] * 1000, 1)  # noqa: E731
+        return {"median": at(0.5), "p95": at(0.95), "p99": at(0.99), "n": len(xs)}
+    with _METRICS_MU:
+        snap = {k: {**{c: m[c] for c in ("acquired", "timeouts", "unavailable")}, "wait": list(m["wait"]),
+                    "hold": list(m["hold"])} for k, m in _METRICS.items()}
+    return {k: {**{c: v[c] for c in ("acquired", "timeouts", "unavailable")}, "wait_ms": pct(v["wait"]),
+                "hold_ms": pct(v["hold"])} for k, v in snap.items()}
+
+
+def reset_metrics():
+    with _METRICS_MU:
+        _METRICS.clear()
+
+
 # ---- renewal --------------------------------------------------------------------------------------------------
 
 class _Renewer:
@@ -345,19 +456,36 @@ class UserLock:
     Threads of this process queue on a local re-entrant lock first (cheap); the first entry takes the distributed lease
     and the last exit releases it. Same semantics as the old per-process RLock, now across processes."""
 
+    BUSY = "Your account is busy with another change. Try again in a moment."
+
     def __init__(self, uid, resource="workspace", wait=None):
         self.uid, self.resource = uid, resource
-        self.wait = LEASE_SECONDS + 15 if wait is None else wait  # long enough to outlast a crashed holder's lease
+        self.wait = wait  # None: chosen per entry (interactive or background); a number overrides both
         self._local = threading.RLock()
         self._depth = 0
         self._lease = None
 
+    def wait_limit(self):
+        if self.wait is not None:
+            return self.wait
+        from flask import has_request_context
+        return WAIT_INTERACTIVE if has_request_context() else WAIT_BACKGROUND
+
     def __enter__(self):
-        self._local.acquire()
+        """Bounded wait (in-process queue + shared lease) *before* anything protected runs: on timeout, LockTimeout is
+        raised to the caller and nothing has been read or written."""
+        start, limit = time.monotonic(), self.wait_limit()
+        if not self._local.acquire(timeout=limit):
+            _record_wait(self.resource, time.monotonic() - start, "timeout")
+            raise AccountBusy(self.BUSY)
         try:
             if self._depth == 0:
-                self._lease = acquire(self.resource, self.uid, wait=self.wait,
-                                      busy="Your account is busy with another change. Try again in a moment.")
+                queued = time.monotonic() - start  # time spent behind other threads of this process
+                try:
+                    self._lease = acquire(self.resource, self.uid, wait=max(0.0, limit - queued), busy=self.BUSY,
+                                          _queued=queued or 1e-9)  # measured and reported as one wait, never "quiet"
+                except LockTimeout:
+                    raise AccountBusy(self.BUSY) from None
                 push(self._lease)
             self._depth += 1
         except BaseException:

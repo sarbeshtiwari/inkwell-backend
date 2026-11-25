@@ -148,6 +148,9 @@ Deliberately still per process (not coordination state):
 | `LOCK_RENEW_SECONDS` | 10 | renewal interval (at most a third of the lease) |
 | `LOCK_SAFETY_SECONDS` | 5 | a holder stops when less than this remains (at most a third of the lease) |
 | `LOCK_TXN_SECONDS` | 10 | time limit for one protected write, retries included |
+| `LOCK_WAIT_INTERACTIVE_SECONDS` | 18 | longest wait for the account lock in a web request; then 409 + `Retry-After: 2`, nothing read or changed |
+| `LOCK_WAIT_BACKGROUND_SECONDS` | 45 | longest wait for the account lock in background work |
+| `LOCK_SLOW_WAIT_SECONDS` / `LOCK_SLOW_HOLD_SECONDS` | 1 / 5 | waits and holds at least this long are logged on `inkwell.locks` (lock kind, operation, request id; never account data) |
 | `OPERATIONS_KEEP_DAYS` | 7 | how long finished runs are kept |
 
 None of these are required: the defaults suit Render.

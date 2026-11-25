@@ -69,27 +69,30 @@ def delete_template(ws, tid):
 @login_required
 def save_profile(ws):
     p = body()
+    # Validate (including the mail server's DNS lookup) before taking the account lock.
+    fields = {
+        "name": v_text(p.get("name"), "name", "Your name", 80, required=True, min_len=2),
+        "phone": v_phone(p.get("phone")),
+        "email": v_email(p.get("email"), label="Email"),
+        "smtp_host": v_text(p.get("smtp_host"), "smtp_host", "Mail server", 120),
+        "smtp_port": v_int(p.get("smtp_port") or 465, "smtp_port", "Port", 1, 65535),
+        "smtp_user": v_text(p.get("smtp_user"), "smtp_user", "Login", 254),
+    }
+    if fields["smtp_host"] and not re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}", fields["smtp_host"]):
+        raise Invalid("Enter a mail server like smtp.gmail.com.", "smtp_host")
+    if fields["smtp_port"] not in MAIL_PORTS:
+        raise Invalid("Use port 465 (SSL) or 587 (STARTTLS). Your provider's help page lists the right one.", "smtp_port")
+    if fields["smtp_host"]:
+        public_host(fields["smtp_host"])
+    password = re.sub(r"\s", "", str(p.get("smtp_password") or ""))
+    if len(password) > 200:
+        raise Invalid("That password is too long.", "smtp_password")
+    # Then apply to the profile as it is *now* (re-read under the lock).
     with ws.lock:
         profile = ws.profile()
-        profile.update({
-            "name": v_text(p.get("name"), "name", "Your name", 80, required=True, min_len=2),
-            "phone": v_phone(p.get("phone")),
-            "email": v_email(p.get("email"), label="Email"),
-            "smtp_host": v_text(p.get("smtp_host"), "smtp_host", "Mail server", 120),
-            "smtp_port": v_int(p.get("smtp_port") or 465, "smtp_port", "Port", 1, 65535),
-            "smtp_user": v_text(p.get("smtp_user"), "smtp_user", "Login", 254),
-        })
-        if profile["smtp_host"] and not re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}", profile["smtp_host"]):
-            raise Invalid("Enter a mail server like smtp.gmail.com.", "smtp_host")
-        if profile["smtp_port"] not in MAIL_PORTS:
-            raise Invalid("Use port 465 (SSL) or 587 (STARTTLS). Your provider's help page lists the right one.", "smtp_port")
-        if profile["smtp_host"]:
-            public_host(profile["smtp_host"])
+        profile.update(fields)
         old_password = profile.get("smtp_password", "")
-        password = re.sub(r"\s", "", str(p.get("smtp_password") or ""))
         if password:  # blank = keep the saved password
-            if len(password) > 200:
-                raise Invalid("That password is too long.", "smtp_password")
             profile["smtp_password"] = password
         if p.get("clear_password"):
             profile["smtp_password"] = ""
