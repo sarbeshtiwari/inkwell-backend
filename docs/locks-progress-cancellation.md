@@ -113,45 +113,84 @@ Deliberately still per process (not coordination state):
 - **Not cancellable part-way:** a single AI-match search and a single company research. They check before starting
   and before saving.
 
-## Versioned records (optimistic concurrency, Stage 2A)
+## Versioned records (optimistic concurrency)
 
-**Which records:** those listed in `core.workspace.VERSIONED_KEYS`; currently `templates`, the pilot. They are changed
-without the account lock.
+**Which records:** those listed in `core.workspace.VERSIONED_KEYS`; currently `templates`, `inbox_companies` and
+`ai_portals`. They are changed without the account lock.
 
 **How a change is written** (`ws.update(key, fn, default)`):
-1. Read the record and its `version`.
+1. Read the record, its `version` and its write token `wid`.
 2. Compute `fn(fresh copy)`.
-3. Write with `update_one({_id, version: v}, {$set: ..., $inc: {version: 1}})`. If the version moved, re-read and
-   compute again (up to 5 attempts, with jitter).
-4. After that, answer **409** with `Retry-After: 2`, having written nothing.
+3. Write in one atomic operation (`update_one` with an aggregation pipeline). It matches only if the record is still
+   exactly what was read, and sets:
+   - the new value;
+   - a new random 128-bit token (`secrets.token_hex(16)`);
+   - `version = max(previous + 1, server time in ms)`, computed by MongoDB (`$max`, `$add`, `$toLong: "$$NOW"`).
 
-**Versions and creation:**
-- A missing `version` field (records written before versioning, or rewritten by an older release) counts as 0.
-- `null`, a non-integer, `true`/`false` or a negative number is refused (500), never taken as 0.
-- A missing record is created with an insert; a duplicate key (created concurrently) is retried as an update.
-- `ws.create` writes only if missing. `ws.replace_versioned(..., expected_version=)` refuses a stale form.
+   Every write therefore gets a strictly greater version, even if the server clock moves back.
+4. If the record changed, re-read and compute again (up to 5 attempts, with jitter). After that, answer **409** with
+   `Retry-After: 2`, having written nothing.
 
-**Rules for `fn`:** it must only compute.
-- Network calls, mail, notifications, other writes and taking the account lock all raise inside it, because it may
-  run more than once.
-- Errors it raises propagate, and nothing is written.
+**What "still exactly what was read" means:**
 
-**Coverage is enforced twice:** `ws.save` refuses versioned keys, and a code-scan test fails on any other write path.
+| Record as read | The write must find |
+|---|---|
+| `version` + `wid` (normal) | the same `version` **and** the same `wid` |
+| `version`, no `wid` (written by Stage 2A/2B before tokens existed) | the same `version`, no `wid`, **and the same stored bytes** |
+| no `version`, no `wid` (written before versioning, or by an older release) | no `version`, no `wid`, **and the same stored bytes** |
+| `wid` without `version`, a malformed `wid`, or a non-integer / negative / out-of-range `version` | nothing: refused (500) before anything is computed |
+
+A stale writer's token never comes back, so a paused writer can't match again. That holds even if an old release removed
+the fields, if versions ran ahead in a burst, or if the server clock moved back (the "ABA" problem). Records without a
+token are compared on their stored bytes; the encryption makes those different on every write.
+
+**Creation:** an upsert whose filter can't match an existing record. Two writers creating the record at once: one
+inserts, the other gets a duplicate key and computes again.
+
+**Limits:**
+- **Version range:** BSON int64. A record whose version leaves no room for a greater one is refused, never wrapped.
+- **Rules for `fn`:** it must only compute. Network calls, mail, notifications, other writes and taking the account
+  lock all raise inside it.
+- **Coverage:** `ws.save` refuses versioned keys, and two code-scan tests fail on any other write path. They cover
+  literal names, computed `save` keys (only `contact:<id>` is allowed), dynamic `getattr` calls and raw access to the
+  account-data collection.
 
 **Converted so far:** `templates` (Stage 2A), then `inbox_companies` and `ai_portals` (Stage 2B).
 
-**Old and new releases at once — not safe.** A release without versioning (`8b59986` and earlier) rewrites the whole
-record and drops `version`.
-- **The old writer itself:** it ignores versions entirely, so its write can overwrite a newer versioned change.
-- **The ABA problem for new writers:** the counter restarts at 1 after an old write. A new writer paused after reading
-  version 1 can then match again and write its stale value over both the old write and a newer one. This is
-  reproduced by `test_old_release_writer_interleaving_cannot_cause_a_lost_update`, an expected failure.
-- **Consequence:** never let an old and a new release write the same database at the same time. In particular, Render's
-  overlapping (zero-downtime) deploy is not safe for this change. See the Stage 2B report for the proposed deployment
-  strategy and the counter fix.
+**Old and new releases at once — still not safe.**
+- **What the token fixes:** a *new* writer can no longer overwrite an old release's write with stale data.
+- **What it can't fix:** an *old-release* writer doesn't check anything. Its whole-record replace can still overwrite
+  a newer versioned change made between its read and its write.
+- **Rule:** never let an old and a new release write the same database at the same time. Render's overlapping
+  (zero-downtime) deploy must not be used for this change; deploy as below.
 
-**Rollback:** after a rollback with nothing running in parallel, the old release simply ignores and drops `version`.
-Moving forward again later is then subject to the overlap rule above.
+## Deploying versioned records (no overlap)
+
+Do this for the first deploy of versioned records, and for any move forward after a rollback.
+
+1. **Suspend** the Render service: Dashboard → service → *Suspend Service*. Netlify then gets errors from the API and
+   the app shows "Can't reach the server"; plan a quiet time.
+2. **Verify** that no old instance is still running:
+   - Render shows the service *Suspended*, with no running instance under *Events*.
+   - `curl -s -o /dev/null -w "%{http_code}" https://<service>.onrender.com/healthz` does not return 200.
+   - In MongoDB, no lock lease or `loop:*` lease is being renewed: wait at least `LOCK_LEASE_SECONDS` (30 s).
+3. **Deploy** the new commit, with the service still suspended (manual deploy of that commit).
+4. **Resume** the service and check health:
+   - `/healthz` returns 200;
+   - signing in works;
+   - a template save returns 200;
+   - the saved record in MongoDB has an integer `version` ≥ the server time in ms, and a 32-character hex `wid`;
+   - the Render logs show no `VersionCorrupt` or `ALERT` lines.
+5. **Traffic** returns automatically with the resume; watch the logs for 10 minutes.
+
+**Rollback:**
+1. Suspend.
+2. Verify as above.
+3. Deploy the previous commit.
+4. Resume.
+
+The old release ignores `version` and `wid` and drops them on its next write of each record. Nothing needs migrating.
+To move forward again later, use the same no-overlap procedure.
 
 ## Recurring jobs (`schedules` collection)
 `schedules` holds one document per job (`g:<name>`) or per account and job (`u:<uid>:<name>`): `next_at`, `last_at`.

@@ -45,6 +45,11 @@ def seeded(user):
     return user
 
 
+def _is_ts(v):
+    """A version written now: an int at least the server clock in ms (max(previous + 1, server ms))."""
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 1_700_000_000_000
+
+
 def _add(name):
     return lambda items: items + [{"id": name, "name": name}]
 
@@ -71,7 +76,7 @@ def test_two_writers_read_the_same_version_one_wins_the_other_recomputes_from_fr
     ta.join(10)
     assert seen_by_a == [["base"], ["base", "B"]]   # A computed again, from B's result: its stale value was dropped
     row = _row(ws)
-    assert [t["id"] for t in ws.load("templates", [])] == ["base", "B", "A"] and row["version"] == 3
+    assert [t["id"] for t in ws.load("templates", [])] == ["base", "B", "A"] and _is_ts(row["version"])
 
 
 STALE = """
@@ -139,7 +144,7 @@ def test_many_concurrent_writers_in_separate_processes_lose_no_updates(monkeypat
     ids = [t["id"] for t in ws.load("templates", [])]
     assert done + conflicts == 100 and done > 0
     assert len(ids) == len(set(ids)) == done                       # every write that returned is there, none twice
-    assert _row(ws)["version"] == done                             # one version per successful write
+    assert _is_ts(_row(ws)["version"])
 
 
 def test_threads_hammering_one_record_lose_nothing_that_succeeded():
@@ -165,7 +170,7 @@ def test_missing_version_is_zero_and_the_first_versioned_write_sets_one():
     M.kv.insert_one({"_id": f"{ws.uid}:templates", "uid": ws.uid, "key": "templates", "data": W.seal([{"id": "old"}])})
     assert ws.load_versioned("templates") == ([{"id": "old"}], 0)
     ws.update("templates", _add("new"), default=[])
-    assert _row(ws)["version"] == 1 and [t["id"] for t in ws.load("templates", [])] == ["old", "new"]
+    assert _is_ts(_row(ws)["version"]) and [t["id"] for t in ws.load("templates", [])] == ["old", "new"]
 
 
 def test_a_record_rewritten_by_the_previous_release_drops_its_version_and_stays_safe():
@@ -176,7 +181,7 @@ def test_a_record_rewritten_by_the_previous_release_drops_its_version_and_stays_
     ws.update("templates", _add("b"), default=[])
     M.kv.replace_one({"_id": f"{ws.uid}:templates"}, {"uid": ws.uid, "key": "templates", "data": W.seal([{"id": "legacy"}])})
     ws.update("templates", _add("c"), default=[])
-    assert [t["id"] for t in ws.load("templates", [])] == ["legacy", "c"] and _row(ws)["version"] == 1
+    assert [t["id"] for t in ws.load("templates", [])] == ["legacy", "c"] and _is_ts(_row(ws)["version"])
 
 
 @pytest.mark.parametrize("bad", [None, "3", 1.0, True, -1, {"v": 1}])
@@ -205,7 +210,7 @@ def test_concurrent_creation_one_inserts_the_other_recomputes():
     ts = [threading.Thread(target=lambda t=t: ws.update("templates", change(t), default=[])) for t in ("A", "B")]
     [t.start() for t in ts]
     [t.join(10) for t in ts]
-    assert sorted(t["id"] for t in ws.load("templates", [])) == ["A", "B"] and _row(ws)["version"] == 2
+    assert sorted(t["id"] for t in ws.load("templates", [])) == ["A", "B"] and _is_ts(_row(ws)["version"])
     assert sorted(len(v) for v in seen.values()) == [1, 2]   # the loser got a duplicate key and computed again
 
 
@@ -213,7 +218,7 @@ def test_create_only_writes_when_missing():
     ws = _ws()
     assert ws.create("templates", [{"id": "first"}]) is True
     assert ws.create("templates", [{"id": "second"}]) is False     # duplicate key: left as it was
-    assert ws.load("templates", []) == [{"id": "first"}] and _row(ws)["version"] == 1
+    assert ws.load("templates", []) == [{"id": "first"}] and _is_ts(_row(ws)["version"])
 
 
 def test_exhausted_retries_give_409_and_write_nothing(seeded, monkeypatch):
@@ -350,9 +355,10 @@ def test_code_scan_no_direct_writes_of_versioned_records():
 def test_template_endpoints_behave_as_before(seeded):
     c, ws = seeded["client"], seeded["ws"]
     starter = ws.load("templates", [])
-    assert len(starter) == 1 and _row(ws)["version"] == 1            # signup creates it (version 1)
+    first = _row(ws)
+    assert len(starter) == 1 and _is_ts(first["version"])            # signup creates it
     W.seed_workspace(ws, "Again", "again@example.com")
-    assert ws.load("templates", []) == starter and _row(ws)["version"] == 1   # a second seed never overwrites
+    assert ws.load("templates", []) == starter and _row(ws)["version"] == first["version"]   # a second seed never overwrites
     r = c.post("/api/templates", json={"name": "Second", "subject": "Hi", "body": "Hello {name}, second template."}, headers=H)
     assert r.status_code == 200 and r.get_json()["name"] == "Second"
     tid = r.get_json()["id"]

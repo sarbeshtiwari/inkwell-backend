@@ -39,6 +39,11 @@ def _row(ws, key):
     return M.kv.find_one({"_id": f"{ws.uid}:{key}"})
 
 
+def _is_ts(v):
+    """A version written now: an int at least the server clock in ms (max(previous + 1, server ms))."""
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 1_700_000_000_000
+
+
 def _tags(ws, key):
     v = ws.load(key, KEYS[key][0])
     return sorted(v) if key == "inbox_companies" else [r["slug"] for r in v]
@@ -75,7 +80,7 @@ def test_two_writers_same_version_loser_recomputes_from_fresh_data(key):
     b_done.set()
     t.join(10)
     assert seen == [["base"], sorted(["base", "B"]) if key == "inbox_companies" else ["base", "B"]]
-    assert sorted(_tags(ws, key)) == ["A", "B", "base"] and _row(ws, key)["version"] == 3
+    assert sorted(_tags(ws, key)) == ["A", "B", "base"] and _is_ts(_row(ws, key)["version"])
 
 
 def _tags_of(key, v):
@@ -149,7 +154,7 @@ def test_separate_processes_lose_no_reported_success(key):
     results = [tuple(int(x) for x in o.split("result")[-1].split()[:2]) for o in outs]
     assert sum(r[0] + r[1] for r in results) == 60 and succeeded
     assert set(_tags(ws, key)) == succeeded and len(_tags(ws, key)) == len(succeeded)
-    assert _row(ws, key)["version"] == len(succeeded)
+    assert _is_ts(_row(ws, key)["version"])
 
 
 def test_threads_lose_no_reported_success(key):
@@ -184,7 +189,7 @@ def test_concurrent_creation(key):
     ts = [threading.Thread(target=lambda t=t: ws.update(key, change(t), default=default)) for t in ("A", "B")]
     [t.start() for t in ts]
     [t.join(10) for t in ts]
-    assert sorted(_tags(ws, key)) == ["A", "B"] and sorted(calls.values()) == [1, 2] and _row(ws, key)["version"] == 2
+    assert sorted(_tags(ws, key)) == ["A", "B"] and sorted(calls.values()) == [1, 2] and _is_ts(_row(ws, key)["version"])
 
 
 def test_account_deleted_during_an_update_is_not_recreated(key):
@@ -214,7 +219,7 @@ def test_legacy_record_without_version_converts_on_first_write(key):
     ws, (default, add) = _ws(), KEYS[key]
     M.kv.insert_one({"_id": f"{ws.uid}:{key}", "uid": ws.uid, "key": key, "data": W.seal(add("old")(default))})
     ws.update(key, add("new"), default=default)
-    assert sorted(_tags(ws, key)) == ["new", "old"] and _row(ws, key)["version"] == 1
+    assert sorted(_tags(ws, key)) == ["new", "old"] and _is_ts(_row(ws, key)["version"])
 
 
 def test_callbacks_cannot_reach_the_network(key, monkeypatch):
@@ -241,7 +246,7 @@ def test_company_edit_keeps_name_and_hidden_independently(user):
     assert r == {"ok": True, "name": "Acme", "hidden": True}
     assert c.put(f"/api/inbox/company/{CO}", json={"name": ""}, headers=H).status_code == 400
     assert c.put("/api/inbox/company/not-a-key", json={"name": "x"}, headers=H).status_code == 404
-    assert ws.load("inbox_companies", {}) == {CO: {"name": "Acme", "hidden": True}} and _row(ws, "inbox_companies")["version"] == 2
+    assert ws.load("inbox_companies", {}) == {CO: {"name": "Acme", "hidden": True}} and _is_ts(_row(ws, "inbox_companies")["version"])
 
 
 def test_parallel_company_edits_from_several_tabs_lose_nothing(user, monkeypatch):
@@ -348,11 +353,8 @@ def test_removing_while_another_tab_adds_never_resurrects_or_drops(user, boards)
     assert sorted(p["slug"] for p in ws.load("ai_portals", [])) == ["keep", "new"]
 
 
-# ---- mixed versions: an old release writing the same record --------------------------------------------------------
+# ---- mixed versions: an old release writing the same record (fixed by the write token) ------------------------------
 
-@pytest.mark.xfail(strict=True, reason="Known hazard (Stage 2B report, section 6): a writer of the previous release removes "
-                                       "`version`, so the counter restarts at 1 and a paused new writer that read version 1 "
-                                       "can match again (ABA). Mitigation proposed, not implemented.")
 def test_old_release_writer_interleaving_cannot_cause_a_lost_update(key):
     ws, (default, add) = _ws(), KEYS[key]
     ws.update(key, add("base"), default=default)                    # version 1

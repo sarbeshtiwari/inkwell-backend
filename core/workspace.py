@@ -2,6 +2,8 @@
 
 import copy
 import random
+import re
+import secrets
 import sys
 import threading
 import time
@@ -66,14 +68,45 @@ def forbid_in_update(what):
         raise RuntimeError(f"{what} isn't allowed inside Workspace.update (the change may be computed again)")
 
 
+MAX_VERSION = 2 ** 63 - 2  # BSON int64; the next version must still fit
+_WID = re.compile(r"[0-9a-f]{32}")
+
+
 def _version_of(row):
     """The stored version: 0 only when the field is genuinely missing (records written before versioning)."""
     if "version" not in row:
         return 0
     v = row["version"]
-    if type(v) is not int or v < 0:  # bool, None, float, string... are corruption, never "0"
+    # int or BSON Int64 (an int subclass); bool, None, float, string... are corruption, never "0"
+    if not isinstance(v, int) or isinstance(v, bool) or v < 0 or v > MAX_VERSION:
         raise VersionCorrupt()
-    return v
+    return int(v)
+
+
+def _cas_filter(row):
+    """What a conditional write must find to be sure the record is still exactly what this writer read.
+
+    - Current records: the same `version` AND the same write token `wid` (random, new on every write). A stale writer's
+      token never comes back, whatever happened in between (bursts in one millisecond, a server clock moving back, an
+      old release removing the fields): no ABA.
+    - Records without a token (written before versioning, by an older release, or by Stage 2A/2B before tokens
+      existed): `version` as read (or missing), no token, AND the exact stored bytes. The ciphertext is different on
+      every write, so any rewrite after our read is detected.
+    - A token without a version, or a malformed token: corruption, refused (never matched on version alone)."""
+    version = _version_of(row)
+    if "wid" in row:
+        if "version" not in row or type(row["wid"]) is not str or not _WID.fullmatch(row["wid"]):
+            raise VersionCorrupt()
+        return {"_id": row["_id"], "version": version, "wid": row["wid"]}
+    return {"_id": row["_id"], "version": version if "version" in row else {"$exists": False}, "wid": {"$exists": False},
+            "data": row["data"]}
+
+
+def _write_pipeline(fields):
+    """One atomic write of the value with a new random token and the next version, computed on the server:
+    max(previous + 1, server time in ms). Always strictly greater than the version it replaces."""
+    return [{"$set": {**{k: {"$literal": v} for k, v in fields.items()}, "wid": {"$literal": secrets.token_hex(16)},
+                      "version": {"$max": [{"$add": [{"$ifNull": ["$version", 0]}, 1]}, {"$toLong": "$$NOW"}]}}}]
 
 
 class Workspace:
@@ -118,8 +151,9 @@ class Workspace:
     def update(self, key, fn, default=None, expected_version=None):
         """Change one record with optimistic concurrency and return the new value.
 
-        Reads the record and its version, computes `fn(current)` (a deep copy, so fn may modify it), then writes only if
-        the version is still the one read, incrementing it in the same atomic operation. If another writer got there
+        Reads the record, its version and write token, computes `fn(current)` (a deep copy, so fn may modify it), then
+        writes only if the record is still exactly the one read (_cas_filter), setting the value, a new token and the next
+        version in the same atomic operation (_write_pipeline). If another writer got there
         first, it reads again and computes again from the fresh value: a stale result is never written. Up to
         UPDATE_ATTEMPTS attempts, each waiting a random part of the previous attempt's duration times the attempt number
         (so retries spread out at any network latency), then VersionConflict (409). A record that doesn't exist yet is created
@@ -136,6 +170,7 @@ class Workspace:
                 time.sleep(random.uniform(0.1, 1.0) * max(last, 0.01) * attempt)
             started = time.monotonic()
             row = M.kv.find_one({"_id": _id})
+            match = None if row is None else _cas_filter(row)  # validates version and token before computing anything
             version = None if row is None else _version_of(row)
             if expected_version is not None and version != expected_version:
                 raise VersionConflict()
@@ -150,28 +185,31 @@ class Workspace:
                 return new  # the account was deleted meanwhile: don't recreate its data (same as save)
             fields = {"uid": self.uid, "key": key, "data": blob}
             if row is None:
-                try:
-                    M.kv.insert_one({"_id": _id, **fields, "version": 1})
+                if self._insert(_id, fields):
                     return new
-                except DuplicateKeyError:
-                    last = time.monotonic() - started
-                    continue  # created concurrently: compute again from that record
-            match = {"_id": _id, "version": version} if "version" in row else {"_id": _id, "version": {"$exists": False}}
-            if M.kv.update_one(match, {"$set": fields, "$inc": {"version": 1}}).matched_count:
+                last = time.monotonic() - started
+                continue  # created concurrently: compute again from that record
+            if M.kv.update_one(match, _write_pipeline(fields)).matched_count:
                 return new
             last = time.monotonic() - started
         raise VersionConflict()
 
-    def create(self, key, value):
-        """Write a record only if it doesn't exist yet (version 1). True if created, False if it already existed."""
-        blob = seal(value)
-        if not self._check_size_and_owner(blob):
-            return False
+    @staticmethod
+    def _insert(_id, fields):
+        """Create the record (version and token as for any write) only if it doesn't exist: an upsert whose filter can't
+        match an existing record, so an existing one raises a duplicate key instead of being overwritten."""
         try:
-            M.kv.insert_one({"_id": f"{self.uid}:{key}", "uid": self.uid, "key": key, "data": blob, "version": 1})
+            M.kv.update_one({"_id": _id, "data": {"$exists": False}}, _write_pipeline(fields), upsert=True)
             return True
         except DuplicateKeyError:
             return False
+
+    def create(self, key, value):
+        """Write a record only if it doesn't exist yet. True if created, False if it already existed."""
+        blob = seal(value)
+        if not self._check_size_and_owner(blob):
+            return False
+        return self._insert(f"{self.uid}:{key}", {"uid": self.uid, "key": key, "data": blob})
 
     def replace_versioned(self, key, value, expected_version=None):
         """Replace a versioned record's whole value (versioned write; with expected_version, refuses a stale form)."""
