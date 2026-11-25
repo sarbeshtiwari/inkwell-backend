@@ -111,7 +111,8 @@ def ai_notes(ws, b):
                            '"papers": ["<why it matters, 1 sentence>", ...], "repos": ["<why it matters, 1 sentence>", ...]}',
                            as_json=True, max_tokens=700, timeout=180)
     except Exception as e:
-        return {"error": str(e)[:200]}
+        from infra.redact import error_text
+        return {"error": error_text(e, 200)}
 
 
 def build(ws):

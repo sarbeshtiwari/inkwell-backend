@@ -280,7 +280,8 @@ def run_watch(uid, picks):
                         res = closed_result(job) or watch_apply(w, ws, job, values, paths.get(job["id"], path))
                     except Exception as e:
                         print(f"[Inkwell] watch apply error ({job.get('company')}): {e!r}", flush=True)
-                        res = {"state": "needs_you", "url": job["url"], "error": repr(e)[:300],
+                        from infra.redact import error_text
+                        res = {"state": "needs_you", "url": job["url"], "error": error_text(e, 300),
                                "detail": "The window was closed or the page changed. Apply on the site."}
                     res["at"] = time.time()
                     with ws.lock:

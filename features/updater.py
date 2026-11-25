@@ -66,7 +66,8 @@ def repo_status(name, path, fetch=True):
         out["changed_files"] = [l[3:] for l in git(path, "status", "--porcelain", "--untracked-files=no").splitlines()][:50]
         out["new"] = [{"sha": l[:7], "subject": l[8:]} for l in git(path, "log", "--format=%h %s", "HEAD..@{u}").splitlines()][:30]
     except Exception as e:
-        out.update(ok=False, error=str(e)[:200])
+        from infra.redact import error_text
+        out.update(ok=False, error=error_text(e, 200))
     return out
 
 
@@ -213,4 +214,6 @@ def undo(ws):
 @bp.get("/api/update/progress")
 @login_required
 def progress(ws):
-    return jsonify(job={k: STATE.get(k) for k in ("state", "log", "error", "message")}, enabled=enabled() and C().is_admin(ws.uid))
+    from infra import rbac
+    rbac.check(ws.uid, "admin.update_app", target="update.progress", message="Only the owner of this Inkwell can see update progress.")
+    return jsonify(job={k: STATE.get(k) for k in ("state", "log", "error", "message")}, enabled=enabled())

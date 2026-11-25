@@ -20,7 +20,7 @@ PATTERNS = [
                r"tvly-[A-Za-z0-9_\-]{16,}|AKIA[0-9A-Z]{16}|ya29\.[A-Za-z0-9_\-]{20,}|gsk_[A-Za-z0-9]{20,})"),
     re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),  # JWT
     re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=\-]{12,}"),
-    re.compile(r"(?i)((?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp|https?|cloudinary)://[^:/\s@]+:)[^@\s/]+(@)"),
+    re.compile(r"(?i)\b([a-z][a-z0-9+.\-]{1,20}://[^:/\s@]+:)[^@\s/]+(@)"),  # user:password@ in any URL scheme
     re.compile(r"(?i)\b((?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|"
                r"session|cookie|ro_session|__Host-ro_session)\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&\"']+)"),
 ]
@@ -30,7 +30,7 @@ PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d\s().-]{8,}\d)(?!\w)")
 
 def _str_secrets(s):
     for p in PATTERNS:
-        if p.groups >= 2 and p.pattern.startswith("(?i)((?:mongodb"):
+        if p.groups >= 2 and "://" in p.pattern:
             s = p.sub(lambda m: m.group(1) + MASK + m.group(2), s)
         elif p.groups >= 2:
             s = p.sub(lambda m: m.group(1) + MASK, s)
@@ -66,6 +66,16 @@ def pii(value, _depth=0):
     if isinstance(value, (list, tuple)):
         return type(value)(pii(v, _depth + 1) for v in value)
     return value
+
+
+def error_text(exc, limit=300):
+    """Text of an exception (and the exceptions it was raised from) that is safe to store or show: secrets removed."""
+    parts, seen, e = [], set(), exc
+    while e is not None and id(e) not in seen and len(parts) < 4:
+        seen.add(id(e))
+        parts.append(f"{type(e).__name__}: {e}" if not parts else f"caused by {type(e).__name__}: {e}")
+        e = e.__cause__ or e.__context__
+    return secrets(" | ".join(parts))[:limit]
 
 
 class RedactingStream:

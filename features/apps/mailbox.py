@@ -12,6 +12,7 @@ from features.apps.common import C
 from features.apps.extract import body_text, calendar_start, extract, naukri_events, snippet
 from features.apps.noise import ME_NAMES, NOISE_FROM, NOISE_SUBJECT, my_name_parts, norm_company, norm_role, tidy
 from features.apps.statuses import ACTIVE, STATUSES, classify
+from infra.redact import error_text, secrets
 
 
 SEARCH_TERMS = ['"your application"', '"application status"', 'applied', 'applying', 'interview', 'assessment',
@@ -157,7 +158,7 @@ def scan(ws, full=False, notify=True):
         return {"emails": mails, "added": added, "updated": updated, "changed": len(moved), "total": len(apps)}
     except Exception as e:
         state.update(last_run=datetime.now().isoformat(timespec="seconds"),
-                     last_error=str(e) if isinstance(e, core.Invalid) else f"Sync failed: {e}")
+                     last_error=secrets(str(e)) if isinstance(e, core.Invalid) else f"Sync failed: {error_text(e, 300)}")
         ws.save("apps_sync", state)
         raise
     finally:

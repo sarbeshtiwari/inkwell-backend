@@ -8,6 +8,7 @@ from conftest import H, client_for, make_user
 
 import app as A
 from core.db import M
+from core.validation import Invalid
 from infra import audit, rbac, redact
 
 
@@ -15,7 +16,7 @@ from infra import audit, rbac, redact
 def admin(monkeypatch):
     uid, email = make_user()
     monkeypatch.setattr(rbac, "ADMIN_EMAILS", {email})
-    rbac.bootstrap()
+    rbac.reconcile()
     return {"uid": uid, "email": email, "client": client_for(uid)}
 
 
@@ -25,7 +26,7 @@ def test_bootstrap_makes_admin_email_super_admin_and_audits(admin):
     assert rbac.role_of(admin["uid"]) == rbac.SUPER_ADMIN
     ev = M.audit_log.find_one({"action": "role.grant", "target": f"user:{admin['uid']}"})
     assert ev and ev["actor"] == "system" and ev["outcome"] == "ok"
-    rbac.bootstrap()  # idempotent: no second grant event
+    rbac.reconcile()  # idempotent: no second grant event
     assert M.audit_log.count_documents({"action": "role.grant", "target": f"user:{admin['uid']}"}) == 1
 
 
@@ -68,12 +69,12 @@ def test_no_privilege_escalation(admin, user):
     with pytest.raises(Exception) as e:
         rbac.grant(user["uid"], user["uid"], rbac.SUPER_ADMIN)  # a user granting themselves admin
     assert getattr(e.value, "status", None) == 403 and rbac.role_of(user["uid"]) == rbac.USER
-    with pytest.raises(Exception):
+    with pytest.raises(Invalid):
         rbac.grant(admin["uid"], admin["uid"], rbac.USER)  # nobody changes their own role
     rbac.grant(admin["uid"], user["uid"], rbac.SUPER_ADMIN)
     assert rbac.role_of(user["uid"]) == rbac.SUPER_ADMIN
     assert M.audit_log.find_one({"action": "role.change", "actor": admin["uid"], "target": f"user:{user['uid']}"})
-    with pytest.raises(Exception):
+    with pytest.raises(Invalid):
         rbac.grant(admin["uid"], user["uid"], "root")  # unknown roles refused
 
 

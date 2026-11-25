@@ -252,7 +252,8 @@ def scan(ws, full=False):
         ws.save("inbox_sync", state)
         return {"added": added, "total": core.M.mail_index.count_documents({"uid": ws.uid})}
     except Exception as e:
-        state.update(last_error=str(e) if isinstance(e, core.Invalid) else f"Sync failed: {e}")
+        from infra.redact import error_text, secrets
+        state.update(last_error=secrets(str(e)) if isinstance(e, core.Invalid) else f"Sync failed: {error_text(e, 300)}")
         ws.save("inbox_sync", state)
         raise
     finally:
