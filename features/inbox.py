@@ -392,15 +392,17 @@ def edit_company(ws, key):
     core, p = C(), C().body()
     if not re.fullmatch(r"[0-9a-f]{16,64}", key):
         raise core.Invalid("Unknown company.", status=404)
-    with ws.lock:
-        ov = ws.load("inbox_companies", {})
-        cur = ov.get(key, {})
-        if "name" in p:
-            cur["name"] = core.v_text(p.get("name"), "name", "Company name", 80, required=True)
-        if "hidden" in p:
-            cur["hidden"] = bool(p["hidden"])
-        ov[key] = cur
-        ws.save("inbox_companies", ov)
+    changes = {}
+    if "name" in p:
+        changes["name"] = core.v_text(p.get("name"), "name", "Company name", 80, required=True)
+    if "hidden" in p:
+        changes["hidden"] = bool(p["hidden"])
+
+    def change(ov):  # applied to the latest overrides (versioned record: no account lock)
+        ov[key] = {**ov.get(key, {}), **changes}
+        return ov
+
+    cur = ws.update("inbox_companies", change, default={})[key]
     return jsonify(ok=True, **cur)
 
 

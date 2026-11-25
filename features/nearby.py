@@ -484,8 +484,7 @@ def track(ws, cid):
     if not hit:
         raise core.Invalid("Couldn't find a job board Inkwell can read for this company.")
     ats, slug, jobs = hit
-    with ws.lock:
-        rows = [r for r in (ws.load("ai_portals", []) or []) if (r["ats"], r["slug"]) != (ats, slug)]
-        rows.append({"ats": ats, "slug": slug, "name": row["name"][:80], "jobs": len(jobs)})
-        ws.save("ai_portals", rows[-60:])
+    entry = {"ats": ats, "slug": slug, "name": row["name"][:80], "jobs": len(jobs)}
+    ws.update("ai_portals", lambda rows: ([r for r in (rows or []) if (r["ats"], r["slug"]) != (ats, slug)] + [entry])[-60:],
+              default=[])  # versioned record: no account lock; keeps the latest 60, as before
     return jsonify(added={"name": row["name"], "jobs": len(jobs)})

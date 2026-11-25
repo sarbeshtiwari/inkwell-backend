@@ -138,8 +138,20 @@ without the account lock.
 
 **Coverage is enforced twice:** `ws.save` refuses versioned keys, and a code-scan test fails on any other write path.
 
-**Rollback:** the previous release rewrites the whole record without `version`. The next versioned write treats that
-as version 0, so it's safe either way.
+**Converted so far:** `templates` (Stage 2A), then `inbox_companies` and `ai_portals` (Stage 2B).
+
+**Old and new releases at once — not safe.** A release without versioning (`8b59986` and earlier) rewrites the whole
+record and drops `version`.
+- **The old writer itself:** it ignores versions entirely, so its write can overwrite a newer versioned change.
+- **The ABA problem for new writers:** the counter restarts at 1 after an old write. A new writer paused after reading
+  version 1 can then match again and write its stale value over both the old write and a newer one. This is
+  reproduced by `test_old_release_writer_interleaving_cannot_cause_a_lost_update`, an expected failure.
+- **Consequence:** never let an old and a new release write the same database at the same time. In particular, Render's
+  overlapping (zero-downtime) deploy is not safe for this change. See the Stage 2B report for the proposed deployment
+  strategy and the counter fix.
+
+**Rollback:** after a rollback with nothing running in parallel, the old release simply ignores and drops `version`.
+Moving forward again later is then subject to the overlap rule above.
 
 ## Recurring jobs (`schedules` collection)
 `schedules` holds one document per job (`g:<name>`) or per account and job (`u:<uid>:<name>`): `next_at`, `last_at`.

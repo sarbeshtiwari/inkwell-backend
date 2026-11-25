@@ -121,19 +121,20 @@ def add_portal(ws):
                            "or of one job on it.", "link" if link else "name")
     ats, slug, jobs = hit
     company = name or next((j.get("company") for j in jobs if j.get("company")), slug)
-    with ws.lock:
-        rows = [r for r in (ws.load("ai_portals", []) or []) if (r["ats"], r["slug"]) != (ats, slug)]
+    entry = {"ats": ats, "slug": slug, "name": company[:80], "jobs": len(jobs)}
+
+    def change(rows):  # applied to the latest list (versioned record: no account lock)
+        rows = [r for r in (rows or []) if (r["ats"], r["slug"]) != (ats, slug)]
         if len(rows) >= MAX_PORTALS:
             raise core.Invalid(f"You can keep up to {MAX_PORTALS} companies.")
-        rows.append({"ats": ats, "slug": slug, "name": company[:80], "jobs": len(jobs)})
-        ws.save("ai_portals", rows)
+        return rows + [entry]
+
+    rows = ws.update("ai_portals", change, default=[])
     return jsonify(portals=rows, added={"ats": ats, "slug": slug, "name": company, "jobs": len(jobs)})
 
 
 @bp.delete("/api/ai-jobs/portals/<ats>/<path:slug>")
 @login_required
 def remove_portal(ws, ats, slug):
-    with ws.lock:
-        rows = [r for r in (ws.load("ai_portals", []) or []) if (r["ats"], r["slug"]) != (ats, slug)]
-        ws.save("ai_portals", rows)
+    rows = ws.update("ai_portals", lambda rows: [r for r in (rows or []) if (r["ats"], r["slug"]) != (ats, slug)], default=[])
     return jsonify(portals=rows)

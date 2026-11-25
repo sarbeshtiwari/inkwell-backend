@@ -36,7 +36,7 @@ DELETED = {}  # uid -> time: accounts deleted in this process (background writer
 
 # Records written only through the version protocol (Workspace.update / create / replace_versioned). Plain save() refuses
 # them, and tests/test_stage2a_versioned.py fails if any code writes them another way.
-VERSIONED_KEYS = frozenset({"templates"})
+VERSIONED_KEYS = frozenset({"templates", "inbox_companies", "ai_portals"})
 UPDATE_ATTEMPTS = 5
 
 
