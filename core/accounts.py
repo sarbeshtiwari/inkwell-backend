@@ -182,7 +182,8 @@ def end_session():
 
 USER_COLLECTIONS = ("kv", "send_log", "documents", "notifications", "push_subs", "mail_index", "replies",
                     "site_images", "site_stats", "leads", "queue", "search", "operations", "locks", "schedules", "model_usage",
-                    "tasks", "task_events", "traces", "spans", "checkpoints", "checkpoint_writes", "approvals")
+                    "tasks", "task_events", "traces", "spans", "checkpoints", "checkpoint_writes", "approvals",
+                    "agent_runs")
 
 
 def delete_user_data(uid):

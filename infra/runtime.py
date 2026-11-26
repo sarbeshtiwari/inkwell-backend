@@ -19,10 +19,19 @@
 - **Approvals.** A node calling an external_action tool pauses the graph (LangGraph interrupt, infra/approvals.py);
   the task waits without a lease and resumes from its checkpoint when the user decides, re-running only that node.
 
-What isn't here yet: version records per run (PH1-09)."""
+- **Versions (ADR-0007).** Every run writes an `agent_runs` record with the exact agent version, instructions
+  version and hash, the tool grants (with each tool's version), and afterwards the models the provider actually
+  answered with and the run's token totals. An agent version is immutable: `agent_versions` stores a fingerprint of
+  each (agent, version) the first time it runs, and a later run whose definition differs under the same version
+  number is refused — a changed agent needs a new version number.
+
+Not here yet: promoting a version needs an evaluation result and an approval (the Evaluator, PH4-02)."""
 
 import datetime as dt
+import hashlib
+import json
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Sequence
 
@@ -44,6 +53,9 @@ def ensure_indexes():
                                unique=True)
     M.checkpoint_writes.create_index([("uid", ASCENDING), ("thread_id", ASCENDING), ("ns", ASCENDING),
                                       ("checkpoint_id", ASCENDING), ("task_id", ASCENDING), ("idx", ASCENDING)], unique=True)
+    M.agent_runs.create_index([("uid", ASCENDING), ("started", DESCENDING)])
+    M.agent_runs.create_index([("agent_id", ASCENDING), ("agent_version", ASCENDING), ("started", DESCENDING)])
+    M.agent_runs.create_index("task_id")
 
 
 # ---- checkpointer -------------------------------------------------------------------------------------------------
@@ -168,6 +180,13 @@ class Agent:
     build: Callable[[], Any] = field(repr=False)  # returns an uncompiled StateGraph builder
     max_steps: int = 25
     description: str = ""
+    instructions: str = ""  # the agent's system instructions (fingerprinted with its version)
+
+    def fingerprint(self):
+        """What defines this version: instructions, grants with their tool versions, step limit."""
+        spec = {"instructions_version": self.instructions_version, "instructions": self.instructions,
+                "grants": tool_versions(self.grants), "max_steps": self.max_steps}
+        return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
 
     @property
     def kind(self):
@@ -175,6 +194,29 @@ class Agent:
 
 
 AGENTS = {}
+
+
+class VersionChanged(tasks.Permanent):
+    def __init__(self, agent):
+        super().__init__(f"{agent.id} version {agent.version} was changed without a new version number; "
+                         "publish it as a new version.", "version_changed")
+
+
+def tool_versions(grants):
+    return {t: tools.REGISTRY[t].version if t in tools.REGISTRY else None for t in sorted(grants)}
+
+
+def _pin_version(agent):
+    """Record (agent, version)'s fingerprint the first time it runs; refuse a different definition later."""
+    fp = agent.fingerprint()
+    doc = {"_id": f"{agent.id}@{agent.version}", "agent_id": agent.id, "version": agent.version,
+           "instructions_version": agent.instructions_version, "fingerprint": fp,
+           "grants": tool_versions(agent.grants), "max_steps": agent.max_steps,
+           "first_seen": dt.datetime.now(dt.timezone.utc)}
+    existing = M.agent_versions.find_one_and_update({"_id": doc["_id"]}, {"$setOnInsert": doc}, upsert=True)
+    if existing and existing.get("fingerprint") != fp:
+        raise VersionChanged(agent)
+    return fp
 
 
 def register_agent(agent):
@@ -221,10 +263,55 @@ def _run(agent, task):
     config = {"configurable": {"thread_id": task.id, "inkwell_ctx": tctx, "inkwell_task": task},
               "recursion_limit": agent.max_steps}
     resuming = saver.get_tuple({"configurable": {"thread_id": task.id}}) is not None
+    fp = _pin_version(agent)
+    run_id = uuid.uuid4().hex
+    started = dt.datetime.now(dt.timezone.utc)
+    M.agent_runs.insert_one({"_id": run_id, "uid": task.uid, "task_id": task.id, "trace_id": task.trace_id,
+                             "attempt": task.attempt, "agent_id": agent.id, "agent_version": agent.version,
+                             "instructions_version": agent.instructions_version, "fingerprint": fp,
+                             "grants": tool_versions(agent.grants), "mode": mode, "resumed": resuming,
+                             "started": started, "outcome": "running"})
+    outcome = "error"
+    try:
+        result = _invoke(agent, task, graph, config, payload, resuming)
+        outcome = "done"
+        return result
+    except tasks.Waiting:
+        outcome = "waiting_approval"
+        raise
+    except tasks.Cancelled:
+        outcome = "cancelled"
+        raise
+    finally:
+        _close_run(run_id, task, started, outcome)
+
+
+def _close_run(run_id, task, started, outcome):
+    """Fill in what actually ran: models the provider answered with, calls and tokens (from model_usage)."""
+    rows = list(M.model_usage.aggregate([
+        {"$match": {"uid": task.uid, "task_id": task.id, "at": {"$gte": started.timestamp()}}},
+        {"$group": {"_id": {"provider": "$provider", "model_id": "$model_id", "requested": "$requested_model"},
+                    "calls": {"$sum": 1}, "input_tokens": {"$sum": {"$ifNull": ["$input_tokens", 0]}},
+                    "output_tokens": {"$sum": {"$ifNull": ["$output_tokens", 0]}}}}]))
+    models_used = [{**r["_id"], "calls": r["calls"]} for r in rows]
+    M.agent_runs.update_one({"_id": run_id}, {"$set": {
+        "outcome": outcome, "ended": dt.datetime.now(dt.timezone.utc), "models": models_used,
+        "model_calls": sum(r["calls"] for r in rows), "input_tokens": sum(r["input_tokens"] for r in rows),
+        "output_tokens": sum(r["output_tokens"] for r in rows)}})
+
+
+def runs_for(uid, task_id=None):
+    q = {"uid": uid, **({"task_id": task_id} if task_id else {})}
+    return list(M.agent_runs.find(q, {"_id": 0}).sort("started", DESCENDING).limit(200))
+
+
+def _invoke(agent, task, graph, config, payload, resuming):
     telemetry.record("step", f"{agent.id}@{agent.version}", summary="resumed from checkpoint" if resuming else "started",
                      agent_id=agent.id, agent_version=agent.version, task_id=task.id)
     try:
-        result = graph.invoke(None if resuming else payload.get("input", {}), config)
+        from infra import gateway
+        with gateway.context(agent_version=agent.version):  # usage records carry the exact agent version
+            result = graph.invoke(None if resuming else payload.get("input", {}), config)
         if isinstance(result, dict) and result.get("__interrupt__"):
             raise tasks.Waiting()  # paused for an approval; resumes from this checkpoint once the user decides
     except GraphRecursionError:
