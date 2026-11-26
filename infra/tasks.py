@@ -61,6 +61,18 @@ LEASE_SECONDS = _seconds("TASK_LEASE_SECONDS", 30.0)
 RETRY_BASE_SECONDS = _seconds("TASK_RETRY_BASE_SECONDS", 5.0)
 RETRY_MAX_SECONDS = _seconds("TASK_RETRY_MAX_SECONDS", 600.0)
 DEFAULT_ATTEMPTS = 3
+
+
+def _int(name, default):
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+# Delegation limits (proposed defaults from the architecture proposal; not product-approved numbers)
+MAX_DEPTH = _int("TASK_MAX_DEPTH", 3)          # a root task is depth 0; its children 1, …
+MAX_CHILDREN = _int("TASK_MAX_CHILDREN", 10)   # direct children per task
 KIND_OK = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 KEY_OK = re.compile(r"^[\w.:@+-]{1,200}$")
 ID_OK = re.compile(r"^[0-9a-f]{32}$")
@@ -88,6 +100,17 @@ class LeaseLost(Exception):
     """This worker no longer owns the task (lease expired or reclaimed): stop without writing anything."""
 
 
+class Stopped(Cancelled):
+    """Raised by checkpoint() when a kill switch covers this task (infra/controls.py)."""
+
+
+class DelegationRefused(Invalid):
+    """A child task would break a delegation limit: too deep, too many children, or a cycle."""
+
+    def __init__(self, message):
+        super().__init__(message, status=409)
+
+
 def register(kind, fn):
     if not KIND_OK.match(kind or ""):
         raise ValueError(f"Bad task kind: {kind!r}")
@@ -101,6 +124,7 @@ def ensure_indexes():
     M.tasks.create_index([("uid", ASCENDING), ("idempotency_key", ASCENDING)], unique=True,
                          partialFilterExpression={"idempotency_key": {"$type": "string"}})
     M.tasks.create_index("parent_id", sparse=True)
+    M.tasks.create_index([("agent_id", ASCENDING), ("status", ASCENDING)], sparse=True)
     M.task_events.create_index([("task_id", ASCENDING), ("at", ASCENDING)])
     M.task_events.create_index([("uid", ASCENDING), ("at", DESCENDING)])
 
@@ -121,9 +145,14 @@ def _event(task_id, uid, event, attempt=None, **detail):
 # ---- creating and reading ---------------------------------------------------------------------------------------
 
 def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS, idempotency_key=None,
-            delay=0.0, deadline=None, parent_id=None):
+            delay=0.0, deadline=None, parent_id=None, agent_id=None):
     """Create a task for `uid`; returns its id. With an idempotency key, an existing task for the same user and key
-    is returned instead of creating another one. `deadline` is an aware datetime or seconds from now."""
+    is returned instead of creating another one. `deadline` is an aware datetime or seconds from now.
+
+    With `parent_id` it is a delegated child: same user as the parent (enforced), depth + 1, and refused
+    (DelegationRefused) past MAX_DEPTH or MAX_CHILDREN, or when `agent_id` already appears in the parent's chain of
+    agents (an agent can't delegate to itself or to an agent that delegated to it). A child never outlives its
+    parent's deadline."""
     if not uid or not isinstance(uid, str):
         raise ValueError("A task needs the user it belongs to.")
     if kind not in HANDLERS:
@@ -135,18 +164,31 @@ def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS,
     now = _now()
     if isinstance(deadline, (int, float)):
         deadline = now + dt.timedelta(seconds=deadline)
-    depth, root_id = 0, None
+    if agent_id is not None and not KIND_OK.match(agent_id):
+        raise ValueError(f"Bad agent id: {agent_id!r}")
+    depth, root_id, chain = 0, None, []
     if parent_id:
-        parent = M.tasks.find_one({"_id": parent_id, "uid": uid}, {"depth": 1, "root_id": 1})
+        parent = M.tasks.find_one({"_id": parent_id, "uid": uid}, {"depth": 1, "root_id": 1, "agent_chain": 1,
+                                                                  "agent_id": 1, "deadline": 1})
         if not parent:  # a child always belongs to its parent's user
             raise ValueError("Parent task not found for this user.")
         depth, root_id = parent.get("depth", 0) + 1, parent.get("root_id") or parent_id
+        chain = [*parent.get("agent_chain", []), *([parent["agent_id"]] if parent.get("agent_id") else [])]
+        if depth > MAX_DEPTH:
+            raise DelegationRefused(f"Delegation is limited to {MAX_DEPTH} levels.")
+        if agent_id is not None and agent_id in chain:
+            raise DelegationRefused(f"{agent_id} is already working on this goal higher up (delegation cycle).")
+        if M.tasks.count_documents({"parent_id": parent_id, "uid": uid}) >= MAX_CHILDREN:
+            raise DelegationRefused(f"A task can delegate at most {MAX_CHILDREN} sub-tasks.")
+        if parent.get("deadline") and (deadline is None or deadline > parent["deadline"]):
+            deadline = parent["deadline"]
     tid = uuid.uuid4().hex
     doc = {"_id": tid, "uid": uid, "kind": kind, "input": seal(input if input is not None else {}),
            "status": QUEUED, "priority": int(priority), "attempts": 0, "max_attempts": int(max_attempts),
            "run_after": now + dt.timedelta(seconds=max(0.0, delay)), "deadline": deadline,
            "lease_token": None, "lease_until": None, "fence": 0, "worker": None, "cancel_requested": False,
-           "parent_id": parent_id, "root_id": root_id, "depth": depth, "created_at": now, "updated_at": now}
+           "parent_id": parent_id, "root_id": root_id, "depth": depth, "agent_id": agent_id, "agent_chain": chain,
+           "created_at": now, "updated_at": now}
     if idempotency_key is not None:
         doc["idempotency_key"] = str(idempotency_key)
     try:
@@ -164,7 +206,7 @@ def view_of(doc, with_content=True):
     if not doc:
         return None
     out = {k: doc.get(k) for k in ("kind", "status", "priority", "attempts", "max_attempts", "run_after", "deadline",
-                                   "cancel_requested", "parent_id", "root_id", "depth", "error_class", "created_at",
+                                   "cancel_requested", "parent_id", "root_id", "depth", "agent_id", "error_class", "created_at",
                                    "updated_at", "finished_at")}
     out["id"] = doc["_id"]
     if with_content:
@@ -236,12 +278,20 @@ def recover():
 
 def claim(worker=None, kinds=None, lease=None):
     """Atomically take the next runnable task (highest priority, then oldest). Returns a Running task or None."""
+    from infra import controls
     lease = lease or LEASE_SECONDS
     recover()
+    switches = controls.active()
+    if switches["global"]:
+        return None  # everything is stopped: start nothing
     token = secrets.token_hex(16)
     q = {"status": QUEUED, "cancel_requested": False, "$expr": {"$lte": ["$run_after", "$$NOW"]}}
     if kinds is not None:
         q["kind"] = {"$in": list(kinds)}
+    if switches["users"]:
+        q["uid"] = {"$nin": sorted(switches["users"])}
+    if switches["agents"]:
+        q["agent_id"] = {"$nin": sorted(switches["agents"])}
     doc = M.tasks.find_one_and_update(
         q, [{"$set": {"status": RUNNING, "lease_token": token, "worker": worker or _worker_name(),
                       "lease_until": {"$add": ["$$NOW", int(lease * 1000)]}, "claimed_at": "$$NOW", "updated_at": "$$NOW",
@@ -262,6 +312,7 @@ class Running:
         self.attempt, self.max_attempts, self.fence = doc["attempts"], doc["max_attempts"], doc["fence"]
         self.token, self.lease, self.deadline = doc["lease_token"], lease, doc.get("deadline")
         self.parent_id, self.root_id, self.depth = doc.get("parent_id"), doc.get("root_id"), doc.get("depth", 0)
+        self.agent_id = doc.get("agent_id")
         self.input = unseal(doc.get("input"), {})
         self.state = RUNNING
 
@@ -278,12 +329,16 @@ class Running:
             raise LeaseLost()
 
     def checkpoint(self):
-        """Call between units of work: raises Cancelled, DeadlinePassed or LeaseLost; otherwise renews the lease."""
+        """Call between units of work: raises Cancelled (Stopped when a kill switch covers it), DeadlinePassed or
+        LeaseLost; otherwise renews the lease."""
+        from infra import controls
         doc = M.tasks.find_one({"_id": self.id}, {"cancel_requested": 1, "status": 1, "lease_token": 1})
         if not doc or doc.get("status") != RUNNING or doc.get("lease_token") != self.token:
             raise LeaseLost()
         if doc.get("cancel_requested"):
             raise Cancelled()
+        if controls.stopped(self.uid, self.agent_id):
+            raise Stopped()
         if self.deadline and _now() >= self.deadline:
             raise DeadlinePassed()
         self.heartbeat()
@@ -300,8 +355,8 @@ class Running:
     def complete(self, result=None):
         self._finish(DONE, {"result": seal(result), "finished_at": _now(), "error": None, "error_class": None}, "done")
 
-    def cancelled(self):
-        self._finish(CANCELLED, {"finished_at": _now()}, "cancelled", reason="checkpoint")
+    def cancelled(self, reason="checkpoint"):
+        self._finish(CANCELLED, {"finished_at": _now()}, "cancelled", reason=reason)
 
     def fail(self, error, error_class="error", retryable=True):
         """Record a failure: retried later with backoff while attempts remain (and the deadline allows),
@@ -351,6 +406,8 @@ def execute(task):
             result = fn(task)
         except LeaseLost:
             return None
+        except Stopped:
+            task.cancelled("kill_switch")
         except Cancelled:
             task.cancelled()
         except DeadlinePassed:

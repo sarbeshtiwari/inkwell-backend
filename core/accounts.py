@@ -73,6 +73,7 @@ def init_storage():
     M.ratelimits.create_index("expire_at", expireAfterSeconds=0)
     M.queue.create_index("uid")
     from infra import audit, gateway, locks, operations, rbac, schedule, tasks
+    M.kill_switches.create_index("active")
     locks.ensure_indexes()
     gateway.ensure_indexes()
     tasks.ensure_indexes()

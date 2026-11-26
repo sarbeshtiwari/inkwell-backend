@@ -54,3 +54,34 @@ def admin_operation_cancel(ws, uid, kind):
     audit.record("operation.cancel", ws.uid, target=f"user:{uid}", details={"kind": kind, "key": key, "reason": reason})
     view = operations.cancel(uid, kind, key)
     return jsonify(ok=True, state=view["state"] if view else None, cancel_requested=bool(view and view["cancel_requested"]))
+
+
+@app.get("/api/admin/kill-switches")
+@login_required
+@rbac.require_permission("admin.control_agents", message="Only a Super Admin can see kill switches.")
+def admin_kill_switches(ws):
+    """Super Admin: every kill switch (scope, state, reason, who, when). Metadata only."""
+    from infra import controls
+    return jsonify(switches=controls.listing())
+
+
+@app.post("/api/admin/kill-switches")
+@login_required
+def admin_kill_switch_set(ws):
+    """Super Admin: stop new executions globally, for one agent ({agent_id}) or one user ({uid}).
+    {cancel_running: true} also asks covered running tasks to stop at their next checkpoint. Audited first."""
+    from infra import controls
+    p = body()
+    stopped = controls.set_switch(ws.uid, agent_id=p.get("agent_id") or None, uid=p.get("uid") or None,
+                                  reason=p.get("reason"), cancel_running=bool(p.get("cancel_running")))
+    return jsonify(ok=True, cancel_requested=stopped, switches=controls.listing())
+
+
+@app.post("/api/admin/kill-switches/clear")
+@login_required
+def admin_kill_switch_clear(ws):
+    """Super Admin: clear a kill switch (queued tasks it held back start running again). Audited first."""
+    from infra import controls
+    p = body()
+    controls.clear_switch(ws.uid, agent_id=p.get("agent_id") or None, uid=p.get("uid") or None, reason=p.get("reason"))
+    return jsonify(ok=True, switches=controls.listing())
