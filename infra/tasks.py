@@ -47,6 +47,7 @@ from infra.redact import error_text
 log = logging.getLogger("inkwell.tasks")
 
 QUEUED, RUNNING, DONE, FAILED, CANCELLED, DEAD = "queued", "running", "done", "failed", "cancelled", "dead_letter"
+WAITING = "waiting_approval"
 FINAL = (DONE, FAILED, CANCELLED, DEAD)
 
 
@@ -98,6 +99,10 @@ class Permanent(Exception):
 
 class LeaseLost(Exception):
     """This worker no longer owns the task (lease expired or reclaimed): stop without writing anything."""
+
+
+class Waiting(Exception):
+    """Raised by a handler that paused for a human decision: the task waits (no lease, no retry) until resume()."""
 
 
 class Stopped(Cancelled):
@@ -239,14 +244,24 @@ def cancel(uid, task_id):
     if not ID_OK.match(str(task_id or "")):
         return None
     now = _now()
-    r = M.tasks.update_one({"_id": task_id, "uid": uid, "status": QUEUED},
+    r = M.tasks.update_one({"_id": task_id, "uid": uid, "status": {"$in": [QUEUED, WAITING]}},
                            {"$set": {"status": CANCELLED, "cancel_requested": True, "finished_at": now, "updated_at": now}})
     if r.modified_count:
         _event(task_id, uid, "cancelled", reason="requested")
+        from infra import approvals
+        approvals.withdraw_for_task(uid, task_id)
     elif M.tasks.update_one({"_id": task_id, "uid": uid, "status": RUNNING, "cancel_requested": False},
                             {"$set": {"cancel_requested": True, "updated_at": now}}).modified_count:
         _event(task_id, uid, "cancel_requested")
     return get(uid, task_id)
+
+
+def resume(uid, task_id):
+    """Queue a task that was waiting for a decision again (it continues from its checkpoint). Idempotent."""
+    now = _now()
+    if M.tasks.update_one({"_id": task_id, "uid": uid, "status": WAITING},
+                          {"$set": {"status": QUEUED, "run_after": now, "updated_at": now}}).modified_count:
+        _event(task_id, uid, "resumed")
 
 
 # ---- claiming -----------------------------------------------------------------------------------------------------
@@ -362,6 +377,10 @@ class Running:
     def complete(self, result=None):
         self._finish(DONE, {"result": seal(result), "finished_at": _now(), "error": None, "error_class": None}, "done")
 
+    def wait(self, reason="approval"):
+        """Pause for a human decision. The attempt it used is given back: waiting isn't a failure."""
+        self._finish(WAITING, {"attempts": max(0, self.attempt - 1)}, "waiting", reason=reason)
+
     def cancelled(self, reason="checkpoint"):
         self._finish(CANCELLED, {"finished_at": _now()}, "cancelled", reason=reason)
 
@@ -429,6 +448,9 @@ def _execute(task, sp):
             result = fn(task)
         except LeaseLost:
             return None
+        except Waiting:
+            task.wait()
+            return task.state
         except Stopped:
             task.cancelled("kill_switch")
         except Cancelled:
@@ -440,8 +462,9 @@ def _execute(task, sp):
         except Invalid as e:  # validation and permission errors from existing code: retrying won't help
             task.fail(e.message, "invalid", retryable=False)
         except Exception as e:
-            if getattr(e, "error_class", None) == "budget":  # retrying can't help until the budget allows it
-                task.fail(e, "budget", retryable=False)
+            cls = getattr(e, "error_class", None)
+            if cls == "budget" or getattr(e, "permanent", False):  # retrying can't help (budget, permission, …)
+                task.fail(e, cls or "permanent", retryable=False)
                 return _mark(task, sp)
             log.warning("task %s (%s) attempt %s failed: %s", task.id, task.kind, task.attempt, error_text(e, 200))
             task.fail(e, getattr(e, "error_class", None) or type(e).__name__.lower()[:40])

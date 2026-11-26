@@ -10,8 +10,9 @@ tools through call(ctx, tool_id, args) with a ToolContext built by the runtime f
 - **Risk classes.** read · write_internal · external_action · destructive.
   - In **shadow** mode only `read` tools run; anything else is refused (ShadowRefused), so a shadow run can't change
     the user's data or the outside world.
-  - `external_action` tools never run from here: they need a per-action human approval (ADR-0005), which is the
-    approvals layer's job (PH1-08). Until that exists, they are refused (ApprovalRequired).
+  - `external_action` tools run only through a per-action human approval (ADR-0005, infra/approvals.py): the first
+    call creates an approval and pauses the run; the tool runs once, with the approved arguments, after the user
+    approves. Outside an agent task they are refused (ApprovalRequired).
   - `destructive` tools aren't granted to agents.
 - **Kill switches** covering the user or agent stop a call before it starts.
 - **Telemetry.** Every call writes a `tool_call` span (tool id, version, risk, outcome, error class, and a redacted
@@ -37,14 +38,17 @@ TOOL_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
 
 class ToolError(Exception):
     error_class = "tool_error"
+    permanent = False  # True: retrying the step can't help (the task queue fails it at once)
 
 
 class ToolNotFound(ToolError):
     error_class = "tool_not_found"
+    permanent = True
 
 
 class ToolDenied(ToolError):
     error_class = "permission_denied"
+    permanent = True
 
 
 class ShadowRefused(ToolDenied):
@@ -55,8 +59,18 @@ class ApprovalRequired(ToolDenied):
     error_class = "approval_required"
 
 
+class ApprovalRejected(ToolDenied):
+    error_class = "approval_rejected"
+
+
+class OutcomeUnknown(ToolError):
+    error_class = "outcome_unknown"
+    permanent = True  # never repeated automatically
+
+
 class InvalidArguments(ToolError):
     error_class = "invalid_arguments"
+    permanent = True
 
 
 class InvalidResult(ToolError):
@@ -222,8 +236,6 @@ def call(ctx, tool_id, args=None):
             _deny(ctx, tool_id, "destructive", ToolDenied(f"{tool_id} can't be used by agents."))
         if ctx.mode == "shadow" and t.risk != READ:
             raise ShadowRefused(f"{tool_id} changes data, so it doesn't run in shadow mode.")
-        if t.risk == EXTERNAL_ACTION:
-            raise ApprovalRequired(f"{tool_id} needs your approval before it can run.")
         if controls.stopped(ctx.uid, ctx.agent_id):
             raise ToolDenied("Agent work is stopped right now (kill switch).")
         try:
@@ -231,11 +243,19 @@ def call(ctx, tool_id, args=None):
         except ValueError as e:
             raise InvalidArguments(f"{tool_id}: {e}") from None
         started = time.monotonic()
-        result = t.fn(ctx, **args)
-        try:
-            validate(result, t.output_schema)
-        except ValueError as e:
-            raise InvalidResult(f"{tool_id} returned something unexpected: {e}") from None
+
+        def run(final_args):
+            out = t.fn(ctx, **final_args)
+            try:
+                validate(out, t.output_schema)
+            except ValueError as e:
+                raise InvalidResult(f"{tool_id} returned something unexpected: {e}") from None
+            return out
+        if t.risk == EXTERNAL_ACTION:
+            from infra import approvals
+            result = approvals.gate(ctx, t, args, run)
+        else:
+            result = run(args)
         if sp is not None:
             n = len(result) if isinstance(result, (list, dict)) else None
             sp.update(summary=f"{t.id}@{t.version} ({t.risk}) ok in {round((time.monotonic() - started) * 1000)} ms"

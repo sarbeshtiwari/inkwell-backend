@@ -16,7 +16,10 @@
 - **Limits.** `max_steps` becomes LangGraph's recursion limit; hitting it fails the task (error class "max_steps",
   not retried). Delegation, budgets and deadlines are enforced by the task queue and the gateway.
 
-What isn't here yet: human-approval interrupts (PH1-08) and version records per run (PH1-09)."""
+- **Approvals.** A node calling an external_action tool pauses the graph (LangGraph interrupt, infra/approvals.py);
+  the task waits without a lease and resumes from its checkpoint when the user decides, re-running only that node.
+
+What isn't here yet: version records per run (PH1-09)."""
 
 import datetime as dt
 import re
@@ -222,6 +225,8 @@ def _run(agent, task):
                      agent_id=agent.id, agent_version=agent.version, task_id=task.id)
     try:
         result = graph.invoke(None if resuming else payload.get("input", {}), config)
+        if isinstance(result, dict) and result.get("__interrupt__"):
+            raise tasks.Waiting()  # paused for an approval; resumes from this checkpoint once the user decides
     except GraphRecursionError:
         raise tasks.Permanent(f"{agent.id} took more than {agent.max_steps} steps, so it was stopped.", "max_steps")
     return _jsonable(result)

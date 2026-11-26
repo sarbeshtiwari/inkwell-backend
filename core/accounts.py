@@ -74,6 +74,8 @@ def init_storage():
     M.queue.create_index("uid")
     from infra import audit, gateway, locks, operations, rbac, runtime, schedule, tasks, telemetry
     runtime.ensure_indexes()
+    from infra import approvals
+    approvals.ensure_indexes()
     telemetry.ensure_indexes()
     M.kill_switches.create_index("active")
     locks.ensure_indexes()
@@ -180,7 +182,7 @@ def end_session():
 
 USER_COLLECTIONS = ("kv", "send_log", "documents", "notifications", "push_subs", "mail_index", "replies",
                     "site_images", "site_stats", "leads", "queue", "search", "operations", "locks", "schedules", "model_usage",
-                    "tasks", "task_events", "traces", "spans", "checkpoints", "checkpoint_writes")
+                    "tasks", "task_events", "traces", "spans", "checkpoints", "checkpoint_writes", "approvals")
 
 
 def delete_user_data(uid):
