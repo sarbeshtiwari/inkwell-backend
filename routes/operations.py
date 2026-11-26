@@ -116,3 +116,61 @@ def admin_budget_set(ws):
                              limits=p.get("limits") if isinstance(p.get("limits"), dict) else None,
                              applies_to=p.get("applies_to") or ["platform"], reason=p.get("reason"))
     return jsonify(ok=True, budget=out)
+
+
+# ---- Agent Observatory (metadata only) --------------------------------------------------------------------------
+
+@app.get("/api/admin/agents/overview")
+@login_required
+@rbac.require_permission("admin.read_metadata", message="Only a Super Admin can see agent activity.")
+def admin_agents_overview(ws):
+    """Counts and totals across all users: tasks by status, runs by agent and outcome, model use by model, errors by
+    class. Numbers only: no user content, no task inputs or results."""
+    from core.db import M
+
+    def group(coll, match, key):
+        return [{**r["_id"], "count": r["count"]} for r in coll.aggregate([
+            {"$match": match}, {"$group": {"_id": key, "count": {"$sum": 1}}}, {"$sort": {"count": -1}}, {"$limit": 100}])]
+    return jsonify(
+        tasks=group(M.tasks, {"kind": {"$regex": "^agent\\."}}, {"agent_id": "$agent_id", "status": "$status"}),
+        runs=group(M.agent_runs, {}, {"agent_id": "$agent_id", "agent_version": "$agent_version", "outcome": "$outcome"}),
+        task_errors=group(M.tasks, {"error_class": {"$ne": None}, "kind": {"$regex": "^agent\\."}}, {"error_class": "$error_class"}),
+        models=[{**r["_id"], **{k: r[k] for k in ("calls", "errors", "input_tokens", "output_tokens", "cost", "latency_ms")}}
+                for r in M.model_usage.aggregate([{"$group": {
+                    "_id": {"provider": "$provider", "model_id": "$model_id", "billing": "$billing"},
+                    "calls": {"$sum": 1}, "errors": {"$sum": {"$cond": [{"$eq": ["$status", "ok"]}, 0, 1]}},
+                    "input_tokens": {"$sum": {"$ifNull": ["$input_tokens", 0]}},
+                    "output_tokens": {"$sum": {"$ifNull": ["$output_tokens", 0]}},
+                    "cost": {"$sum": {"$ifNull": ["$cost", 0]}}, "latency_ms": {"$avg": "$latency_ms"}}},
+                    {"$sort": {"calls": -1}}, {"$limit": 100}])])
+
+
+@app.get("/api/admin/agents/tasks")
+@login_required
+@rbac.require_permission("admin.read_metadata", message="Only a Super Admin can see agent activity.")
+def admin_agent_tasks(ws):
+    """Recent agent tasks across users (`?status=`, `?agent_id=`): metadata only."""
+    from flask import request
+
+    from core.db import M
+    from infra import tasks
+    q = {"kind": {"$regex": "^agent\\."}}
+    if request.args.get("status"):
+        q["status"] = str(request.args["status"])[:40]
+    if request.args.get("agent_id"):
+        q["agent_id"] = str(request.args["agent_id"])[:64]
+    rows = M.tasks.find(q).sort("created_at", -1).limit(100)
+    return jsonify(tasks=[{**tasks.view_of(d, with_content=False), "uid": d["uid"]} for d in rows])
+
+
+@app.get("/api/admin/agents/traces/<trace_id>")
+@login_required
+@rbac.require_permission("admin.read_metadata", message="Only a Super Admin can see agent activity.")
+def admin_agent_trace(ws, trace_id):
+    """One trace's metadata: span types, timings, statuses, error classes, models and tokens. No names, summaries
+    or payloads (content reveal stays disabled)."""
+    from infra import telemetry
+    tr = telemetry.metadata_trace(str(trace_id)[:64])
+    if not tr:
+        raise Invalid("Unknown trace.", status=404)
+    return jsonify(trace=tr)
