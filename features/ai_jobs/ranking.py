@@ -152,31 +152,38 @@ def llm_review(profile, ranked, top=6, hint=""):
     return ranked
 
 
+def search_sources(tools, sources, profile):
+    """Run the chosen search sources and drop duplicates (the same job on several sources is kept once, preferring the
+    one that can be applied to). Returns (jobs, errors); a failing source becomes an error line, never a failure."""
+    found, errors = [], []
+    for src in sources:
+        try:
+            if src == "career_sites":
+                found += tools["career_sites"].invoke({"role": profile["role"], "company": profile.get("company", "")})
+            elif src == "remote_boards":
+                found += tools["remote_boards"].invoke({"role": profile["role"]})
+            else:
+                found += tools[src].invoke({"query": search_query(profile)})
+        except Exception as e:
+            errors.append(f"{ {'tavily': 'Tavily', 'brave': 'Brave', 'remote_boards': 'Job boards'}.get(src, 'Career sites') }: {str(e)[:120]}")
+    uniq, same = {}, {}
+    for j in sorted(found, key=lambda j: j["ats"] not in ("greenhouse", "lever", "ashby")):  # the same job on several sources: keep the appliable one
+        key = re.sub(r"[^a-z0-9]", "", f"{j.get('company', '')}|{j['title']}".lower())
+        if j["id"] in uniq or key in same:
+            continue
+        uniq[j["id"]] = j
+        same[key] = j["id"]
+    jobs = list(uniq.values())
+    return jobs, errors
+
+
 def build_chain(keys, sources, portals=(), location=""):
     """LangChain pipeline: profile -> search (tools) -> rank -> optional local-model review."""
     from langchain_core.runnables import RunnableLambda
     tools = make_tools(keys, portals, location)
 
     def search(state):
-        found, errors = [], []
-        for src in sources:
-            try:
-                if src == "career_sites":
-                    found += tools["career_sites"].invoke({"role": state["profile"]["role"], "company": state["profile"].get("company", "")})
-                elif src == "remote_boards":
-                    found += tools["remote_boards"].invoke({"role": state["profile"]["role"]})
-                else:
-                    found += tools[src].invoke({"query": search_query(state["profile"])})
-            except Exception as e:
-                errors.append(f"{ {'tavily': 'Tavily', 'brave': 'Brave', 'remote_boards': 'Job boards'}.get(src, 'Career sites') }: {str(e)[:120]}")
-        uniq, same = {}, {}
-        for j in sorted(found, key=lambda j: j["ats"] not in ("greenhouse", "lever", "ashby")):  # the same job on several sources: keep the appliable one
-            key = re.sub(r"[^a-z0-9]", "", f"{j.get('company', '')}|{j['title']}".lower())
-            if j["id"] in uniq or key in same:
-                continue
-            uniq[j["id"]] = j
-            same[key] = j["id"]
-        jobs = list(uniq.values())
+        jobs, errors = search_sources(tools, sources, state["profile"])
         return {**state, "jobs": jobs, "errors": errors}
 
     def prefilter(state):
