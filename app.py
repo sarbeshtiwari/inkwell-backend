@@ -91,6 +91,10 @@ if os.environ.get("BOUNCE_WATCH", "1") == "1":
     bridge.every(3600, feature_ai_jobs.weekly_digest_all, "ai-weekly-digest")  # sends on Mondays, once a week
     bridge.every(300, feature_briefing.daily_tick, "learning-briefing")  # today's briefing, once a day after 07:00
 
+if os.environ.get("AGENT_WORKER_THREADS"):  # local development: run agent tasks in this process (infra/worker.py)
+    from infra import worker as _agent_worker
+    _agent_worker.start()
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["move-files-to-cloudinary"]:
         move_files_to_cloudinary()
