@@ -117,7 +117,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
 
     def answer(system, human):
         if "search criteria" in system:
-            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3}
+            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False}
         if "plan a job search" in system:
             return {"searches": [{"source": "career_sites", "role": "Backend Engineer"}], "why": "ATS boards first"}
         return {"fit": 20 if "Initech" in human else 85, "verdict": "Strong match on Django APIs", "red_flags": []}
@@ -125,7 +125,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
     tid = start(uid, goal="Find me 3 backend jobs that use Django")
     run_all()
     r = report(uid, tid)
-    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3}
+    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False}
     assert world["searches"][0] == ("career_sites", "Backend Engineer")       # the model's plan was followed
     assert len(world["searches"]) == len(set(world["searches"]))              # no search is ever repeated
     assert r["scout_notes"][0] == "Round 1: ATS boards first"
@@ -203,3 +203,34 @@ def test_another_users_rules_and_resume_are_never_used(world, monkeypatch):
     run_all()
     assert "gh:acme:1" in [p["id"] for p in report(uid, tid)["recommended"]]
     assert tasks.get(other, tid) is None and tasks.children(other, tid) == []
+
+
+def test_researcher_runs_only_when_asked_and_its_facts_reach_the_report(world, monkeypatch):
+    from features.research import company as research
+    uid = world["uid"]
+    seen = []
+
+    def fake_text(ws, rec):
+        seen.append((ws.uid, rec["name"]))
+        return {"identity": {"matched": True}, "fields": {}}
+    monkeypatch.setattr(research, "research_text", fake_text)
+    monkeypatch.setattr(research, "validate", lambda raw, rec, fetch=None: {"fields": {"website": [
+        {"value": f"https://{rec['name'].lower()}.example", "source": "x", "excerpt": "e"}]}})
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4})
+    run_all()
+    assert seen == [] and [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst"]
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "research": True, "count": 2})
+    run_all()
+    r = report(uid, tid)
+    assert [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst", "researcher"]
+    assert len(seen) <= 2 and all(u == uid for u, _ in seen)
+    rec = r["recommended"][0]
+    assert rec["company_research"]["status"] == "partial" and rec["company_research"]["fields"]["website"]
+    assert A.Workspace(uid).load("company_research", None) is None  # read-only: nothing saved to the research list
+
+
+def test_research_without_a_website_is_a_reported_answer_not_a_crash(world):
+    uid = world["uid"]
+    ctx = tools.ToolContext(uid=uid, grants=frozenset({"company.research"}), mode="shadow")
+    out = tools.call(ctx, "company.research", {"name": "Acme"})
+    assert out["status"] == "failed" and "website" in out["error"]

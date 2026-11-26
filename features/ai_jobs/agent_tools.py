@@ -103,3 +103,23 @@ def check_rules(ctx, jobs):
         except Exception:  # one odd posting never spoils the rest (as the match run does)
             out[j["id"]] = []
     return out
+
+
+@tool("company.research", "1", "Public facts about an employer from its own website (and web search with Claude Code "
+      "locally), each checked against the page it came from; claims a page doesn't support are dropped, namesakes "
+      "refused. Read-only: the result isn't saved to the user's research list.",
+      {"type": "object", "additionalProperties": False, "required": ["name"], "properties": {
+          "name": {"type": "string", "maxLength": 200}, "website": {"type": "string", "maxLength": 500},
+          "jobs": {"type": "array", "maxItems": 6, "items": {"type": "object", "properties": {
+              "title": SHORT, "url": {"type": "string", "maxLength": 2000}}}}}},
+      {"type": "object", "required": ["status", "fields"], "properties": {
+          "status": {"type": "string", "enum": ["found", "partial", "not_found", "failed"]}, "fields": OBJECT,
+          "error": {"type": "string", "maxLength": 300}}}, READ, timeout=900)
+def research_company(ctx, name, website="", jobs=()):
+    from features.research import company as research
+    rec = {"name": name, "website": website, "jobs": list(jobs)}
+    try:
+        result = research.validate(research.research_text(ctx.workspace(), rec), rec, fetch=research.fetch_page)
+    except ValueError as e:  # e.g. no website and no web-searching AI: an answer, not a crash
+        return {"status": "failed", "fields": {}, "error": str(e)[:300]}
+    return {"status": research.status_of(result), "fields": result.get("fields") or {}}

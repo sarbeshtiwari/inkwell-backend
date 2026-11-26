@@ -2,6 +2,7 @@
 
     Orchestrator ──delegates──► Job Scout   (find live openings)
                  ──delegates──► Job Analyst (decide fit, explain, flag rule breaks)
+                 ──delegates──► Researcher  (only when asked: validated facts about the picks' employers)
                  ──► report
 
 Each agent decides what to do next from what it has seen; none is a fixed pipeline:
@@ -246,6 +247,52 @@ def build_analyst():
     return g
 
 
+# ---- Researcher ---------------------------------------------------------------------------------------------------
+
+class ResearcherState(TypedDict, total=False):
+    companies: list      # [{"name", "website", "jobs"}]
+    findings: Annotated[list, operator.add]
+    notes: Annotated[list, operator.add]
+
+
+MAX_COMPANIES = 3
+
+
+def researcher_pick(state, config):
+    """Keep the companies worth researching: named, not repeated, at most MAX_COMPANIES."""
+    seen, pick = set(), []
+    for c in state.get("companies", []):
+        key = re.sub(r"[^a-z0-9]", "", str(c.get("name", "")).lower())
+        if key and key not in seen:
+            seen.add(key)
+            pick.append({"name": str(c["name"])[:200], "website": str(c.get("website") or "")[:500],
+                         "jobs": [{"title": str(j.get("title", ""))[:300], "url": str(j.get("url", ""))[:2000]}
+                                  for j in (c.get("jobs") or [])[:6]]})
+    return {"companies": pick[:MAX_COMPANIES], "notes": [f"Researching {min(len(pick), MAX_COMPANIES)} companies"]}
+
+
+def researcher_run(state, config):
+    c, found = runtime.ctx(config), []
+    for co in state.get("companies", []):
+        runtime.checkpoint(config)
+        try:
+            out = tools.call(c, "company.research", co)
+        except tools.ToolError as e:
+            out = {"status": "failed", "fields": {}, "error": str(e)[:300]}
+        found.append({"name": co["name"], **out})
+    return {"findings": found}
+
+
+def build_researcher():
+    g = StateGraph(ResearcherState)
+    g.add_node("pick", researcher_pick)
+    g.add_node("research", researcher_run)
+    g.add_edge(START, "pick")
+    g.add_edge("pick", "research")
+    g.add_edge("research", END)
+    return g
+
+
 # ---- Orchestrator -------------------------------------------------------------------------------------------------
 
 class OrchestratorState(TypedDict, total=False):
@@ -253,6 +300,7 @@ class OrchestratorState(TypedDict, total=False):
     criteria: dict
     scout: dict
     analysis: dict
+    research: dict
     report: dict
     notes: Annotated[list, operator.add]
 
@@ -272,7 +320,8 @@ def orch_plan(state, config):
         count = max(1, min(50, int(c.get("count") or 10)))
     except (TypeError, ValueError):
         years, count = 0.0, 10
-    criteria = {"role": role, "years": years, "location": str(c.get("location") or "")[:120], "count": count}
+    criteria = {"role": role, "years": years, "location": str(c.get("location") or "")[:120], "count": count,
+                "research": bool(c.get("research"))}
     return {"criteria": criteria, "notes": [f"Looking for {count} × {role}" + (f" in {criteria['location']}" if criteria["location"] else "")]}
 
 
@@ -295,12 +344,33 @@ def orch_analyst(state, config):
                          "task_id": child["id"]}}
 
 
+def orch_needs_research(state):
+    """Research only when asked (criteria.research) and there are picks to research."""
+    picks = [s for s in ((state.get("analysis") or {}).get("result") or {}).get("shortlist", []) if s.get("recommend")]
+    return "research" if state["criteria"].get("research") and picks else "report"
+
+
+def orch_research(state, config):
+    picks = [s for s in state["analysis"]["result"]["shortlist"] if s.get("recommend")][:state["criteria"]["count"]]
+    companies = {}
+    for p in picks:
+        companies.setdefault(p["company"], {"name": p["company"], "website": "", "jobs": []})["jobs"].append(
+            {"title": p["title"], "url": p.get("url") or ""})
+    child = runtime.delegate(config, "researcher", {"companies": list(companies.values())}, "research")
+    return {"research": {"status": child["status"], "result": child.get("result") or {}, "error": child.get("error"),
+                         "task_id": child["id"]}}
+
+
 def orch_report(state, config):
     cr, scout, analysis = state["criteria"], state.get("scout") or {}, state.get("analysis") or {}
     shortlist = (analysis.get("result") or {}).get("shortlist") or []
     picks = [s for s in shortlist if s.get("recommend")][:cr["count"]]
+    research = state.get("research") or {}
     problems = [f"{name} {part['status']}: {part.get('error') or 'no result'}" for name, part in
-                (("Job search", scout), ("Job analysis", analysis)) if part and part.get("status") != "done"]
+                (("Job search", scout), ("Job analysis", analysis), ("Company research", research))
+                if part and part.get("status") != "done"]
+    facts = {f["name"]: f for f in (research.get("result") or {}).get("findings", [])}
+    picks = [{**p, "company_research": facts[p["company"]]} if p["company"] in facts else p for p in picks]
     if scout.get("status") == "done" and not scout.get("result", {}).get("jobs"):
         problems.append("The search found no open jobs that fit the role.")
     report = {"criteria": cr, "found": len(scout.get("result", {}).get("jobs") or []), "analysed": len(shortlist),
@@ -320,7 +390,9 @@ def build_orchestrator():
     g.add_edge(START, "plan")
     g.add_edge("plan", "scout")
     g.add_conditional_edges("scout", orch_next, {"analyst": "analyst", "report": "report"})
-    g.add_edge("analyst", "report")
+    g.add_node("research", orch_research)
+    g.add_conditional_edges("analyst", orch_needs_research, {"research": "research", "report": "report"})
+    g.add_edge("research", "report")
     g.add_edge("report", END)
     return g
 
@@ -336,9 +408,13 @@ def register():
         description="Ranks jobs against the resume, checks your rules, and gives a reasoned shortlist.",
         instructions="rank with the engine; never recommend a rule break; model second opinion on the top few"))
     runtime.register_agent(runtime.Agent(
-        "orchestrator", "1", "orchestrator-1", frozenset(), build_orchestrator, max_steps=10,
+        "researcher", "1", "researcher-1", frozenset({"company.research"}), build_researcher, max_steps=6,
+        description="Finds validated public facts about the employers of the shortlisted jobs.",
+        instructions="at most 3 companies; every fact checked against its page; read-only"))
+    runtime.register_agent(runtime.Agent(
+        "orchestrator", "2", "orchestrator-2", frozenset(), build_orchestrator, max_steps=10,
         description="Turns a job-search goal into a plan, delegates to the Scout and the Analyst, and reports.",
-        instructions="goal to criteria; delegate scout then analyst; report results and problems honestly"))
+        instructions="goal to criteria; delegate scout then analyst, researcher when asked; report honestly"))
 
 
 register()
