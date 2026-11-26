@@ -68,9 +68,9 @@ Rules:
 
 | ID | Task | Status | Evidence | Remaining work | Dependencies | Priority | Acceptance criteria |
 |---|---|---|---|---|---|---|---|
-| PH2-01 | Orchestrator | NOT STARTED | [spec](../agents/ORCHESTRATOR_SPECIFICATION.md) | Build | PH1-* | P1 | Spec §18 |
-| PH2-02 | Job Scout | NOT STARTED | [spec](../agents/JOB_SCOUT_SPECIFICATION.md) | Build | PH1-06 | P1 | Spec §18 |
-| PH2-03 | Job Analyst | NOT STARTED | [spec](../agents/JOB_ANALYST_SPECIFICATION.md) | Build | PH1-06 | P1 | Spec §18 |
+| PH2-01 | Orchestrator | IMPLEMENTED BUT NOT FULLY VERIFIED | Commit `20f2807`: `features/ai_jobs/agents.py`; `tests/test_first_workflow.py` 8 tests; full suite 547 passed | Delegates to Scout and Analyst only; Researcher, Writer and Applicant steps come with PH2-04..06; quality not yet evaluated (PH2-07, D-09) | PH2-04..06, D-09 | P1 | Spec §18 met for the read-only path: children share uid and trace, cancel cascades, shadow shows zero external effects, every run records versions |
+| PH2-02 | Job Scout | IMPLEMENTED BUT NOT FULLY VERIFIED | Commit `20f2807`: `features/ai_jobs/agents.py`; `tests/test_first_workflow.py` 8 tests; full suite 547 passed | Recall vs the existing AI job match not yet measured (PH2-07) | D-09 | P1 | Failing source doesn't fail the run; closed postings dropped; no LinkedIn or Naukri calls (tools refuse unknown sources) |
+| PH2-03 | Job Analyst | IMPLEMENTED BUT NOT FULLY VERIFIED | Commit `20f2807`: `features/ai_jobs/agents.py`; `tests/test_first_workflow.py` 8 tests; full suite 547 passed | Ghost-job and agreement metrics not yet measured (PH2-07) | D-09 | P1 | No rule-breaking job recommended (tested) |
 | PH2-04 | Researcher (conditional) | NOT STARTED | [spec](../agents/RESEARCHER_SPECIFICATION.md) | Build | PH1-06 | P1 | Spec §18 |
 | PH2-05 | Writer | NOT STARTED | [spec](../agents/WRITER_SPECIFICATION.md) | Build | PH1-06 | P1 | Spec §18 (100% `tailor_rules` compliance) |
 | PH2-06 | Applicant (approval-gated) | NOT STARTED | [spec](../agents/APPLICANT_SPECIFICATION.md) | Build | PH1-08 | P1 | Zero submissions without approval |
