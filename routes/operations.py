@@ -85,3 +85,34 @@ def admin_kill_switch_clear(ws):
     p = body()
     controls.clear_switch(ws.uid, agent_id=p.get("agent_id") or None, uid=p.get("uid") or None, reason=p.get("reason"))
     return jsonify(ok=True, switches=controls.listing())
+
+
+@app.get("/api/usage")
+@login_required
+def my_usage(ws):
+    """The signed-in user's own model usage: today's and this month's calls, tokens and cost (UTC periods)."""
+    import time as _t
+    from infra import gateway
+    day = _t.strftime("%Y-%m-%d", _t.gmtime())
+    month = day[:8] + "01"
+    return jsonify(today=gateway.totals(ws.uid, day, day), month=gateway.totals(ws.uid, month, day[:8] + "31"))
+
+
+@app.get("/api/admin/budgets")
+@login_required
+@rbac.require_permission("admin.manage_budgets", message="Only a Super Admin can see budgets.")
+def admin_budgets(ws):
+    from infra import budgets
+    return jsonify(budgets=budgets.listing())
+
+
+@app.post("/api/admin/budgets")
+@login_required
+def admin_budget_set(ws):
+    """Super Admin: set a scope's limits ({agent_id} or {uid}, or neither for the whole service). Audited first."""
+    from infra import budgets
+    p = body()
+    out = budgets.set_budget(ws.uid, agent_id=p.get("agent_id") or None, uid=p.get("uid") or None,
+                             limits=p.get("limits") if isinstance(p.get("limits"), dict) else None,
+                             applies_to=p.get("applies_to") or ["platform"], reason=p.get("reason"))
+    return jsonify(ok=True, budget=out)

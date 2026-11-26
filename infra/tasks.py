@@ -145,14 +145,17 @@ def _event(task_id, uid, event, attempt=None, **detail):
 # ---- creating and reading ---------------------------------------------------------------------------------------
 
 def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS, idempotency_key=None,
-            delay=0.0, deadline=None, parent_id=None, agent_id=None, trace_id=None):
+            delay=0.0, deadline=None, parent_id=None, agent_id=None, trace_id=None, budget=None):
     """Create a task for `uid`; returns its id. With an idempotency key, an existing task for the same user and key
     is returned instead of creating another one. `deadline` is an aware datetime or seconds from now.
 
     With `parent_id` it is a delegated child: same user as the parent (enforced), depth + 1, and refused
     (DelegationRefused) past MAX_DEPTH or MAX_CHILDREN, or when `agent_id` already appears in the parent's chain of
     agents (an agent can't delegate to itself or to an agent that delegated to it). A child never outlives its
-    parent's deadline."""
+    parent's deadline. `budget` (max_tokens / max_calls / max_cost, see infra/budgets.py) caps every model call in the
+    task's whole tree; children share their root task's budget."""
+    from infra import budgets
+    budget = budgets.clean_task_budget(budget)
     if not uid or not isinstance(uid, str):
         raise ValueError("A task needs the user it belongs to.")
     if kind not in HANDLERS:
@@ -169,7 +172,7 @@ def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS,
     depth, root_id, chain = 0, None, []
     if parent_id:
         parent = M.tasks.find_one({"_id": parent_id, "uid": uid}, {"depth": 1, "root_id": 1, "agent_chain": 1,
-                                                                  "agent_id": 1, "deadline": 1, "trace_id": 1})
+                                                                  "agent_id": 1, "deadline": 1, "trace_id": 1, "budget": 1})
         if not parent:  # a child always belongs to its parent's user
             raise ValueError("Parent task not found for this user.")
         depth, root_id = parent.get("depth", 0) + 1, parent.get("root_id") or parent_id
@@ -183,13 +186,14 @@ def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS,
         if parent.get("deadline") and (deadline is None or deadline > parent["deadline"]):
             deadline = parent["deadline"]
         trace_id = parent.get("trace_id") or trace_id  # a child always reports into its parent's trace
+        budget = parent.get("budget") if parent.get("budget") is not None else budget  # the tree shares one budget
     tid = uuid.uuid4().hex
     doc = {"_id": tid, "uid": uid, "kind": kind, "input": seal(input if input is not None else {}),
            "status": QUEUED, "priority": int(priority), "attempts": 0, "max_attempts": int(max_attempts),
            "run_after": now + dt.timedelta(seconds=max(0.0, delay)), "deadline": deadline,
            "lease_token": None, "lease_until": None, "fence": 0, "worker": None, "cancel_requested": False,
            "parent_id": parent_id, "root_id": root_id, "depth": depth, "agent_id": agent_id, "agent_chain": chain,
-           "trace_id": trace_id or tid,
+           "trace_id": trace_id or tid, "budget": budget,
            "created_at": now, "updated_at": now}
     if idempotency_key is not None:
         doc["idempotency_key"] = str(idempotency_key)
@@ -315,6 +319,7 @@ class Running:
         self.token, self.lease, self.deadline = doc["lease_token"], lease, doc.get("deadline")
         self.parent_id, self.root_id, self.depth = doc.get("parent_id"), doc.get("root_id"), doc.get("depth", 0)
         self.agent_id, self.trace_id = doc.get("agent_id"), doc.get("trace_id") or doc["_id"]
+        self.budget = doc.get("budget")
         self.input = unseal(doc.get("input"), {})
         self.state = RUNNING
 
@@ -402,7 +407,10 @@ def execute(task):
     beat = _Heartbeat(task)
     beat.start()
     try:
+        from infra import gateway
         with telemetry.attach(task.trace_id, task.uid, name=task.kind), \
+                gateway.context(task_id=task.id, root_task_id=task.root_id or task.id, agent_id=task.agent_id,
+                                task_budget=task.budget), \
                 telemetry.span("step", task.kind, task_id=task.id, agent_id=task.agent_id, attempt=task.attempt) as sp:
             status = _execute(task, sp)
         if task.parent_id is None and status in FINAL:  # the root task's outcome closes its trace
@@ -432,19 +440,26 @@ def _execute(task, sp):
         except Invalid as e:  # validation and permission errors from existing code: retrying won't help
             task.fail(e.message, "invalid", retryable=False)
         except Exception as e:
+            if getattr(e, "error_class", None) == "budget":  # retrying can't help until the budget allows it
+                task.fail(e, "budget", retryable=False)
+                return _mark(task, sp)
             log.warning("task %s (%s) attempt %s failed: %s", task.id, task.kind, task.attempt, error_text(e, 200))
             task.fail(e, getattr(e, "error_class", None) or type(e).__name__.lower()[:40])
         else:
             task.complete(result)
-        if sp is not None and task.state not in (DONE, QUEUED):
-            sp.fail(task.state)
-        elif sp is not None and task.state == QUEUED:
-            sp.fail("retry_scheduled")
-        return task.state
+        return _mark(task, sp)
     except LeaseLost:
         if sp is not None:
             sp.fail("lease_lost")
         return None
+
+
+def _mark(task, sp):
+    if sp is not None and task.state == QUEUED:
+        sp.fail("retry_scheduled")
+    elif sp is not None and task.state != DONE:
+        sp.fail(task.state)
+    return task.state
 
 
 def run_once(worker=None, kinds=None, lease=None):

@@ -39,7 +39,9 @@ log = logging.getLogger("inkwell.gateway")
 
 HTTP_TIMEOUT = 90  # seconds; what every HTTP provider call has always used
 BYOK, LOCAL = "byok", "local"
-CONTEXT_FIELDS = ("purpose", "trace_id", "span_id", "task_id", "run_id", "agent_id", "agent_version", "model_config_version")
+CONTEXT_FIELDS = ("purpose", "trace_id", "span_id", "task_id", "root_task_id", "run_id", "agent_id", "agent_version",
+                  "model_config_version", "task_budget")
+NOT_RECORDED = ("task_budget",)  # used for checks, not written to usage records
 
 
 class GatewayError(RuntimeError):
@@ -109,6 +111,7 @@ def ensure_indexes():
     M.model_usage.create_index([("uid", 1), ("day", 1)])
     M.model_usage.create_index([("day", 1), ("model_id", 1)])
     M.model_usage.create_index("trace_id", sparse=True)
+    M.model_usage.create_index("root_task_id", sparse=True)
     M.model_prices.create_index([("provider", 1), ("model", 1), ("effective_from", DESCENDING)])
 
 
@@ -125,8 +128,19 @@ def complete(req):
 def _complete(req, sp):
     adapter = ADAPTERS.get(req.provider) or (_anthropic if req.provider == "anthropic" else
                                             _ollama if req.provider == "ollama" else _openai_compatible)
+    from infra import budgets
     started = time.monotonic()
     reply, out, error = None, None, None
+    ctx = current_context()
+    try:
+        budgets.check(req.uid, req.billing, agent_id=ctx.get("agent_id"), task_budget=ctx.get("task_budget"),
+                      root_task_id=ctx.get("root_task_id"))
+    except budgets.BudgetExceeded as e:  # refused before the provider is ever called
+        error = GatewayError(str(e), "budget")
+        doc = _record(req, None, error, 0, sp, status="refused")
+        if sp is not None:
+            sp.fail("budget")
+        raise error
     try:
         reply = adapter(req)
         text = re.sub(r"<think>.*?</think>", "", reply.text or "", flags=re.S).strip()
@@ -260,9 +274,9 @@ def _cost(p, tokens_in, tokens_out):
     return round((tokens_in * p["input_per_mtok"] + tokens_out * p["output_per_mtok"]) / 1_000_000, 8)
 
 
-def _record(req, reply, error, latency_ms, sp=None):
+def _record(req, reply, error, latency_ms, sp=None, status=None):
     now = time.time()
-    ctx = current_context()
+    ctx = {k: v for k, v in current_context().items() if k not in NOT_RECORDED}
     if sp is not None:  # inside a trace: correlate the usage record with its span
         ctx.setdefault("trace_id", sp.trace_id)
         ctx.setdefault("span_id", sp.span_id)
@@ -273,7 +287,7 @@ def _record(req, reply, error, latency_ms, sp=None):
            "day": dt.datetime.fromtimestamp(now, dt.timezone.utc).strftime("%Y-%m-%d"),
            "purpose": ctx.pop("purpose", None) or req.purpose or "", "provider": req.provider,
            "requested_model": req.model, "model_id": returned, "input_tokens": tokens_in, "output_tokens": tokens_out,
-           "latency_ms": latency_ms, "status": "error" if error else "ok",
+           "latency_ms": latency_ms, "status": status or ("error" if error else "ok"),
            "error_class": error.error_class if error else None, "billing": req.billing,
            "request_id": reply.request_id if reply else None, **ctx}
     try:
