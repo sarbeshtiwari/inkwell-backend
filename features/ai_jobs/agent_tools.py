@@ -86,3 +86,20 @@ def rank(ctx, role, years, jobs, location="", company=""):
           "state": {"type": "string", "enum": ["active", "expired", "uncertain"]}, "reason": SHORT}}, READ, timeout=60)
 def liveness(ctx, job):
     return signals.liveness(job)
+
+
+@tool("rules.check", "1", "Which of the user's own rules each job breaks (never apply to, pay floor, remote only, no "
+      "contract, sponsorship, most years, words to avoid). A missing fact never breaks a rule.",
+      {"type": "object", "additionalProperties": False, "required": ["jobs"], "properties": {
+          "jobs": {"type": "array", "items": JOB, "maxItems": 500}}},
+      {"type": "object"}, READ)
+def check_rules(ctx, jobs):
+    from features.ai_jobs.signals import rule_hits
+    r = get_rules(ctx.workspace())
+    out = {}
+    for j in jobs:
+        try:
+            out[j["id"]] = rule_hits({"location": "", "url": "", **j}, j.get("text", ""), r)
+        except Exception:  # one odd posting never spoils the rest (as the match run does)
+            out[j["id"]] = []
+    return out

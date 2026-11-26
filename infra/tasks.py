@@ -48,6 +48,7 @@ log = logging.getLogger("inkwell.tasks")
 
 QUEUED, RUNNING, DONE, FAILED, CANCELLED, DEAD = "queued", "running", "done", "failed", "cancelled", "dead_letter"
 WAITING = "waiting_approval"
+WAITING_CHILDREN = "waiting_children"
 FINAL = (DONE, FAILED, CANCELLED, DEAD)
 
 
@@ -102,7 +103,12 @@ class LeaseLost(Exception):
 
 
 class Waiting(Exception):
-    """Raised by a handler that paused for a human decision: the task waits (no lease, no retry) until resume()."""
+    """Raised by a handler that paused: for a human decision (reason "approval") or for its delegated child tasks
+    (reason "children"). The task waits (no lease, no retry) until resume(), or until its children have all finished."""
+
+    def __init__(self, reason="approval"):
+        super().__init__(reason)
+        self.reason = reason
 
 
 class Stopped(Cancelled):
@@ -244,16 +250,36 @@ def cancel(uid, task_id):
     if not ID_OK.match(str(task_id or "")):
         return None
     now = _now()
-    r = M.tasks.update_one({"_id": task_id, "uid": uid, "status": {"$in": [QUEUED, WAITING]}},
+    r = M.tasks.update_one({"_id": task_id, "uid": uid, "status": {"$in": [QUEUED, WAITING, WAITING_CHILDREN]}},
                            {"$set": {"status": CANCELLED, "cancel_requested": True, "finished_at": now, "updated_at": now}})
     if r.modified_count:
         _event(task_id, uid, "cancelled", reason="requested")
         from infra import approvals
         approvals.withdraw_for_task(uid, task_id)
+        _child_finished(uid, task_id)
     elif M.tasks.update_one({"_id": task_id, "uid": uid, "status": RUNNING, "cancel_requested": False},
                             {"$set": {"cancel_requested": True, "updated_at": now}}).modified_count:
         _event(task_id, uid, "cancel_requested")
+    for child in M.tasks.find({"parent_id": task_id, "uid": uid, "status": {"$nin": list(FINAL)}}, {"_id": 1}):
+        cancel(uid, child["_id"])  # cancelling a task cancels the work it delegated
     return get(uid, task_id)
+
+
+def _child_finished(uid, task_id):
+    """A task reached a final state: if its parent is waiting for its children and none is left running, the parent
+    is queued again. Safe to call any number of times, from any process."""
+    doc = M.tasks.find_one({"_id": task_id, "uid": uid}, {"parent_id": 1})
+    parent_id = doc and doc.get("parent_id")
+    if parent_id and not M.tasks.find_one({"parent_id": parent_id, "uid": uid, "status": {"$nin": list(FINAL)}}, {"_id": 1}):
+        now = _now()
+        if M.tasks.update_one({"_id": parent_id, "uid": uid, "status": WAITING_CHILDREN},
+                              {"$set": {"status": QUEUED, "run_after": now, "updated_at": now}}).modified_count:
+            _event(parent_id, uid, "resumed", reason="children_finished")
+
+
+def children(uid, task_id):
+    """The task's delegated child tasks (with their results), oldest first."""
+    return [view_of(d) for d in M.tasks.find({"parent_id": task_id, "uid": uid}).sort("created_at", ASCENDING)]
 
 
 def resume(uid, task_id):
@@ -289,12 +315,15 @@ def recover():
                                {"$set": {**sets, "lease_token": None, "lease_until": None, "updated_at": now}})
         if r.modified_count:
             _event(doc["_id"], doc["uid"], event, attempt=doc.get("attempts"))
+            if sets["status"] in FINAL:
+                _child_finished(doc["uid"], doc["_id"])
     late = {"status": QUEUED, "deadline": {"$ne": None}, "$expr": {"$lte": ["$deadline", "$$NOW"]}}
     for doc in M.tasks.find(late, {"uid": 1}):
         if M.tasks.update_one({"_id": doc["_id"], "status": QUEUED},
                               {"$set": {"status": FAILED, "error_class": "deadline", "error": seal("Its deadline passed."),
                                         "finished_at": now, "updated_at": now}}).modified_count:
             _event(doc["_id"], doc["uid"], "failed", error_class="deadline")
+            _child_finished(doc["uid"], doc["_id"])
 
 
 def claim(worker=None, kinds=None, lease=None):
@@ -373,13 +402,22 @@ class Running:
             raise LeaseLost()
         self.state = status
         _event(self.id, self.uid, event, attempt=self.attempt, **detail)
+        if status in FINAL and self.parent_id:
+            _child_finished(self.uid, self.id)
 
     def complete(self, result=None):
         self._finish(DONE, {"result": seal(result), "finished_at": _now(), "error": None, "error_class": None}, "done")
 
     def wait(self, reason="approval"):
-        """Pause for a human decision. The attempt it used is given back: waiting isn't a failure."""
-        self._finish(WAITING, {"attempts": max(0, self.attempt - 1)}, "waiting", reason=reason)
+        """Pause for a human decision or for child tasks. The attempt it used is given back: waiting isn't a failure."""
+        status = WAITING_CHILDREN if reason == "children" else WAITING
+        self._finish(status, {"attempts": max(0, self.attempt - 1)}, "waiting", reason=reason)
+        if status == WAITING_CHILDREN and not M.tasks.find_one(
+                {"parent_id": self.id, "uid": self.uid, "status": {"$nin": list(FINAL)}}, {"_id": 1}):
+            now = _now()  # the children finished before we started waiting: don't wait for nothing
+            if M.tasks.update_one({"_id": self.id, "status": WAITING_CHILDREN},
+                                  {"$set": {"status": QUEUED, "run_after": now, "updated_at": now}}).modified_count:
+                _event(self.id, self.uid, "resumed", reason="children_finished")
 
     def cancelled(self, reason="checkpoint"):
         self._finish(CANCELLED, {"finished_at": _now()}, "cancelled", reason=reason)
@@ -448,8 +486,8 @@ def _execute(task, sp):
             result = fn(task)
         except LeaseLost:
             return None
-        except Waiting:
-            task.wait()
+        except Waiting as w:
+            task.wait(w.reason)
             return task.state
         except Stopped:
             task.cancelled("kill_switch")

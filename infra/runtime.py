@@ -243,6 +243,24 @@ def start(uid, agent_id, input, *, mode="shadow", parent_id=None, **task_options
                          **task_options)
 
 
+def delegate(config, agent_id, input, key):
+    """From inside a node: hand `input` to another agent as a child task, and wait for its result.
+
+    Returns the child's task view (status, result, error) once it has finished. Until then the graph pauses and the
+    task waits; it resumes here when the child is done. `key` names this delegation within the parent (re-running the
+    node finds the same child instead of creating another). Delegation limits (depth, children, cycles) and the
+    parent's deadline and budget apply to the child."""
+    parent = config["configurable"]["inkwell_task"]
+    c = ctx(config)
+    child_id = start(c.uid, agent_id, input, mode=c.mode, parent_id=parent.id, idempotency_key=f"d:{parent.id}:{key}")
+    view = tasks.get(c.uid, child_id)
+    if view["status"] in tasks.FINAL:
+        return view
+    from langgraph.types import interrupt
+    interrupt({"waiting_for": "children", "task_id": child_id})
+    return tasks.get(c.uid, child_id)  # only reached outside a graph
+
+
 def ctx(config):
     """The ToolContext of the run executing this node."""
     return config["configurable"]["inkwell_ctx"]
@@ -313,7 +331,9 @@ def _invoke(agent, task, graph, config, payload, resuming):
         with gateway.context(agent_version=agent.version):  # usage records carry the exact agent version
             result = graph.invoke(None if resuming else payload.get("input", {}), config)
         if isinstance(result, dict) and result.get("__interrupt__"):
-            raise tasks.Waiting()  # paused for an approval; resumes from this checkpoint once the user decides
+            first = result["__interrupt__"][0].value
+            # paused for an approval (resumes when the user decides) or for delegated tasks (resumes when they finish)
+            raise tasks.Waiting("children" if isinstance(first, dict) and first.get("waiting_for") == "children" else "approval")
     except GraphRecursionError:
         raise tasks.Permanent(f"{agent.id} took more than {agent.max_steps} steps, so it was stopped.", "max_steps")
     return _jsonable(result)

@@ -90,3 +90,4 @@ from .routes import (  # noqa: F401
     apply, apply_kit, finish, live_view, run_apply,
 )
 from . import agent_tools  # noqa: F401,E402  (registers the agent tools: infra/tools.py)
+from . import agents  # noqa: F401,E402  (registers the first-workflow agents: infra/runtime.py)
