@@ -72,8 +72,9 @@ def init_storage():
     M.sessions.create_index("uid")
     M.ratelimits.create_index("expire_at", expireAfterSeconds=0)
     M.queue.create_index("uid")
-    from infra import audit, locks, operations, rbac, schedule
+    from infra import audit, gateway, locks, operations, rbac, schedule
     locks.ensure_indexes()
+    gateway.ensure_indexes()
     operations.ensure_indexes()
     schedule.ensure_indexes()
     audit.ensure_indexes()
@@ -174,7 +175,7 @@ def end_session():
 
 
 USER_COLLECTIONS = ("kv", "send_log", "documents", "notifications", "push_subs", "mail_index", "replies",
-                    "site_images", "site_stats", "leads", "queue", "search", "operations", "locks", "schedules")
+                    "site_images", "site_stats", "leads", "queue", "search", "operations", "locks", "schedules", "model_usage")
 
 
 def delete_user_data(uid):

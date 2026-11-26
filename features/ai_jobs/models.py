@@ -16,6 +16,7 @@ from bridge import login_required
 
 from features.ai_jobs import cli_llm
 from features.ai_jobs.common import C, OLLAMA_MODEL, OLLAMA_URL, bp
+from infra import gateway
 
 PROVIDERS = {  # id: (label, OpenAI-compatible base URL, suggested model, key page)
     "claude_cli": ("Claude Code (your plan, on this computer)", "", "", "https://claude.com/claude-code"),
@@ -65,9 +66,9 @@ def config(ws):
             pid = "ollama"  # e.g. on the hosted service: fall back to the free local model
         else:
             model = s.get("model", "")
-            return {"provider": pid, "model": model, "local": True, "label": f"{PROVIDERS[pid][0].split(' (')[0]}{' · ' + model if model else ''}"}
+            return {"provider": pid, "model": model, "local": True, "uid": ws.uid, "label": f"{PROVIDERS[pid][0].split(' (')[0]}{' · ' + model if model else ''}"}
     if pid == "ollama" or pid not in PROVIDERS:
-        return {"provider": "ollama", "model": OLLAMA_MODEL, "label": f"{OLLAMA_MODEL} (local)", "local": True} if ollama_up() else None
+        return {"provider": "ollama", "model": OLLAMA_MODEL, "label": f"{OLLAMA_MODEL} (local)", "local": True, "uid": ws.uid} if ollama_up() else None
     key = (ws.load("ai_keys", {}) or {}).get("llm_" + pid, "")
     base = s.get("base_url", "") if pid == "local" else PROVIDERS[pid][1]
     model = s.get("model") or PROVIDERS[pid][2]
@@ -75,7 +76,7 @@ def config(ws):
         return None
     if (pid != "local" and not key) or not model:
         return None
-    return {"provider": pid, "model": model, "key": key, "base": base.rstrip("/"), "local": pid == "local",
+    return {"provider": pid, "model": model, "key": key, "base": base.rstrip("/"), "local": pid == "local", "uid": ws.uid,
             "label": f"{model} ({'local' if pid == 'local' else PROVIDERS[pid][0].split(' (')[0]})"}
 
 
@@ -97,63 +98,38 @@ def current():
     return getattr(ACTIVE, "cfg", None)
 
 
-def first_json(text):
-    """The first JSON object in a model's answer (models sometimes wrap it in prose or ```json fences)."""
-    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
-    start = text.find("{")
-    while start >= 0:
-        depth = 0
-        for i in range(start, len(text)):
-            depth += {"{": 1, "}": -1}.get(text[i], 0)
-            if depth == 0:
-                try:
-                    return json.loads(text[start:i + 1])
-                except ValueError:
-                    break
-        start = text.find("{", start + 1)
-    raise ValueError("The model didn't answer with JSON.")
+first_json = gateway.first_json  # kept here: research and the CLI helper import it from this module
+
+
+def _billing(cfg):
+    return gateway.LOCAL if cfg.get("local") or cfg["provider"] in ("ollama", "local", *cli_llm.TOOLS) else gateway.BYOK
 
 
 def chat(cfg, system, human, as_json=False, max_tokens=700, temperature=0.2, web=False, timeout=90):
     """One system + user turn on the configured model. Returns text, or a dict when as_json.
-    web=True lets Claude Code / Kiro search the web (other providers ignore it)."""
-    if cfg["provider"] in cli_llm.TOOLS:
-        return cli_llm.ask(cfg["provider"], system, human, as_json, web, timeout, cfg.get("model", ""))
-    if cfg["provider"] == "ollama":
-        from langchain_ollama import ChatOllama
-        from langchain_core.messages import HumanMessage, SystemMessage
-        model = ChatOllama(base_url=OLLAMA_URL, model=cfg["model"], temperature=temperature, num_predict=max_tokens, reasoning=False,
-                           keep_alive="10m", **({"format": "json"} if as_json else {}))
-        text = model.invoke([SystemMessage(system), HumanMessage(human)]).content
-    elif cfg["provider"] == "anthropic":
-        r = requests.post(cfg["base"] + "/messages", timeout=90, json={
-            "model": cfg["model"], "max_tokens": max_tokens, "temperature": temperature, "system": system,
-            "messages": [{"role": "user", "content": human}]},
-            headers={"x-api-key": cfg["key"], "anthropic-version": "2023-06-01", "content-type": "application/json"})
-        check(r)
-        text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
-    else:
-        headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {cfg['key']}"} if cfg.get("key") else {})}
-        if cfg["provider"] == "openrouter":
-            headers.update({"HTTP-Referer": "https://reachout-web.netlify.app", "X-Title": "Inkwell"})
-        r = requests.post(cfg["base"] + "/chat/completions", timeout=90, headers=headers, json={
-            "model": cfg["model"], "max_tokens": max_tokens, "temperature": temperature,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": human}]})
-        check(r)
-        text = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
-    return first_json(text) if as_json else text
+    web=True lets Claude Code / Kiro search the web (other providers ignore it).
+
+    Goes through the model gateway (infra/gateway.py), which records the call's usage; errors are RuntimeErrors
+    (gateway.GatewayError) with the same messages as before."""
+    return gateway.complete(gateway.Request(
+        provider=cfg["provider"], model=cfg.get("model", ""), system=system, human=human, uid=cfg.get("uid"),
+        key=cfg.get("key", ""), base=OLLAMA_URL if cfg["provider"] == "ollama" else cfg.get("base", ""),
+        as_json=as_json, max_tokens=max_tokens, temperature=temperature, web=web, timeout=timeout,
+        billing=_billing(cfg)))
+
+
+def _cli(req):
+    """Claude Code / Kiro on this computer (cli_llm.ask, with its one JSON re-ask), as a gateway adapter."""
+    out = cli_llm.ask(req.provider, req.system, req.human, req.as_json, req.web, req.timeout, req.model)
+    return gateway.Reply(json.dumps(out) if req.as_json else out)
+
+
+for _pid in cli_llm.TOOLS:
+    gateway.register_adapter(_pid, _cli)
 
 
 def check(r):
-    if r.status_code in (401, 403):
-        raise RuntimeError("The provider didn't accept your API key.")
-    if r.status_code == 404:
-        raise RuntimeError("The provider doesn't know that model name.")
-    if r.status_code == 429:
-        raise RuntimeError("The provider says you're over your rate limit or out of credit.")
-    if not r.ok:
-        raise RuntimeError(f"The provider answered HTTP {r.status_code}.")
+    gateway.check_response(r)
 
 
 def public(ws):
