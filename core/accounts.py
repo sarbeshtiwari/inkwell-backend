@@ -72,7 +72,8 @@ def init_storage():
     M.sessions.create_index("uid")
     M.ratelimits.create_index("expire_at", expireAfterSeconds=0)
     M.queue.create_index("uid")
-    from infra import audit, gateway, locks, operations, rbac, schedule, tasks
+    from infra import audit, gateway, locks, operations, rbac, schedule, tasks, telemetry
+    telemetry.ensure_indexes()
     M.kill_switches.create_index("active")
     locks.ensure_indexes()
     gateway.ensure_indexes()
@@ -178,7 +179,7 @@ def end_session():
 
 USER_COLLECTIONS = ("kv", "send_log", "documents", "notifications", "push_subs", "mail_index", "replies",
                     "site_images", "site_stats", "leads", "queue", "search", "operations", "locks", "schedules", "model_usage",
-                    "tasks", "task_events")
+                    "tasks", "task_events", "traces", "spans")
 
 
 def delete_user_data(uid):

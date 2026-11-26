@@ -145,7 +145,7 @@ def _event(task_id, uid, event, attempt=None, **detail):
 # ---- creating and reading ---------------------------------------------------------------------------------------
 
 def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS, idempotency_key=None,
-            delay=0.0, deadline=None, parent_id=None, agent_id=None):
+            delay=0.0, deadline=None, parent_id=None, agent_id=None, trace_id=None):
     """Create a task for `uid`; returns its id. With an idempotency key, an existing task for the same user and key
     is returned instead of creating another one. `deadline` is an aware datetime or seconds from now.
 
@@ -169,7 +169,7 @@ def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS,
     depth, root_id, chain = 0, None, []
     if parent_id:
         parent = M.tasks.find_one({"_id": parent_id, "uid": uid}, {"depth": 1, "root_id": 1, "agent_chain": 1,
-                                                                  "agent_id": 1, "deadline": 1})
+                                                                  "agent_id": 1, "deadline": 1, "trace_id": 1})
         if not parent:  # a child always belongs to its parent's user
             raise ValueError("Parent task not found for this user.")
         depth, root_id = parent.get("depth", 0) + 1, parent.get("root_id") or parent_id
@@ -182,12 +182,14 @@ def enqueue(uid, kind, input=None, *, priority=0, max_attempts=DEFAULT_ATTEMPTS,
             raise DelegationRefused(f"A task can delegate at most {MAX_CHILDREN} sub-tasks.")
         if parent.get("deadline") and (deadline is None or deadline > parent["deadline"]):
             deadline = parent["deadline"]
+        trace_id = parent.get("trace_id") or trace_id  # a child always reports into its parent's trace
     tid = uuid.uuid4().hex
     doc = {"_id": tid, "uid": uid, "kind": kind, "input": seal(input if input is not None else {}),
            "status": QUEUED, "priority": int(priority), "attempts": 0, "max_attempts": int(max_attempts),
            "run_after": now + dt.timedelta(seconds=max(0.0, delay)), "deadline": deadline,
            "lease_token": None, "lease_until": None, "fence": 0, "worker": None, "cancel_requested": False,
            "parent_id": parent_id, "root_id": root_id, "depth": depth, "agent_id": agent_id, "agent_chain": chain,
+           "trace_id": trace_id or tid,
            "created_at": now, "updated_at": now}
     if idempotency_key is not None:
         doc["idempotency_key"] = str(idempotency_key)
@@ -206,7 +208,7 @@ def view_of(doc, with_content=True):
     if not doc:
         return None
     out = {k: doc.get(k) for k in ("kind", "status", "priority", "attempts", "max_attempts", "run_after", "deadline",
-                                   "cancel_requested", "parent_id", "root_id", "depth", "agent_id", "error_class", "created_at",
+                                   "cancel_requested", "parent_id", "root_id", "depth", "agent_id", "trace_id", "error_class", "created_at",
                                    "updated_at", "finished_at")}
     out["id"] = doc["_id"]
     if with_content:
@@ -312,7 +314,7 @@ class Running:
         self.attempt, self.max_attempts, self.fence = doc["attempts"], doc["max_attempts"], doc["fence"]
         self.token, self.lease, self.deadline = doc["lease_token"], lease, doc.get("deadline")
         self.parent_id, self.root_id, self.depth = doc.get("parent_id"), doc.get("root_id"), doc.get("depth", 0)
-        self.agent_id = doc.get("agent_id")
+        self.agent_id, self.trace_id = doc.get("agent_id"), doc.get("trace_id") or doc["_id"]
         self.input = unseal(doc.get("input"), {})
         self.state = RUNNING
 
@@ -396,8 +398,21 @@ class _Heartbeat(threading.Thread):
 def execute(task):
     """Run a claimed task's handler and record the outcome. Returns the final (or re-queued) status, or None when
     the lease was lost (someone else owns the task now; nothing was written)."""
+    from infra import telemetry
     beat = _Heartbeat(task)
     beat.start()
+    try:
+        with telemetry.attach(task.trace_id, task.uid, name=task.kind), \
+                telemetry.span("step", task.kind, task_id=task.id, agent_id=task.agent_id, attempt=task.attempt) as sp:
+            status = _execute(task, sp)
+        if task.parent_id is None and status in FINAL:  # the root task's outcome closes its trace
+            telemetry.end(task.trace_id, task.uid, status)
+        return status
+    finally:
+        beat.stop.set()
+
+
+def _execute(task, sp):
     try:
         try:
             fn = HANDLERS.get(task.kind)
@@ -421,11 +436,15 @@ def execute(task):
             task.fail(e, getattr(e, "error_class", None) or type(e).__name__.lower()[:40])
         else:
             task.complete(result)
+        if sp is not None and task.state not in (DONE, QUEUED):
+            sp.fail(task.state)
+        elif sp is not None and task.state == QUEUED:
+            sp.fail("retry_scheduled")
         return task.state
     except LeaseLost:
+        if sp is not None:
+            sp.fail("lease_lost")
         return None
-    finally:
-        beat.stop.set()
 
 
 def run_once(worker=None, kinds=None, lease=None):

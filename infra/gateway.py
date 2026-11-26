@@ -116,6 +116,13 @@ def ensure_indexes():
 
 def complete(req):
     """Make one model call and record it. Returns text, or a dict when req.as_json. Raises GatewayError."""
+    from infra import telemetry
+    with telemetry.span("model_call", req.purpose or current_context().get("purpose") or "chat",
+                        provider=req.provider) as sp:
+        return _complete(req, sp)
+
+
+def _complete(req, sp):
     adapter = ADAPTERS.get(req.provider) or (_anthropic if req.provider == "anthropic" else
                                             _ollama if req.provider == "ollama" else _openai_compatible)
     started = time.monotonic()
@@ -134,7 +141,12 @@ def complete(req):
         error = GatewayError(f"Couldn't reach the model provider ({type(e).__name__}).", "network")
     except Exception as e:  # adapters registered from outside (CLIs) raise their own errors; keep their message
         error = GatewayError(str(e), getattr(e, "error_class", None) or _class_of(e))
-    _record(req, reply, error, round((time.monotonic() - started) * 1000))
+    doc = _record(req, reply, error, round((time.monotonic() - started) * 1000), sp)
+    if sp is not None:
+        sp.update(model_id=doc.get("model_id"), input_tokens=doc.get("input_tokens"),
+                  output_tokens=doc.get("output_tokens"), cost=doc.get("cost"))
+        if error:
+            sp.fail(error.error_class)
     if error:
         raise error
     return out
@@ -248,9 +260,12 @@ def _cost(p, tokens_in, tokens_out):
     return round((tokens_in * p["input_per_mtok"] + tokens_out * p["output_per_mtok"]) / 1_000_000, 8)
 
 
-def _record(req, reply, error, latency_ms):
+def _record(req, reply, error, latency_ms, sp=None):
     now = time.time()
     ctx = current_context()
+    if sp is not None:  # inside a trace: correlate the usage record with its span
+        ctx.setdefault("trace_id", sp.trace_id)
+        ctx.setdefault("span_id", sp.span_id)
     tokens_in = reply.input_tokens if reply else None
     tokens_out = reply.output_tokens if reply else None
     returned = (reply.model_id if reply else None)
@@ -268,6 +283,7 @@ def _record(req, reply, error, latency_ms):
         M.model_usage.insert_one(doc)
     except PyMongoError as e:
         log.warning("model usage record not stored (%s): %s", req.provider, error_text(e, 200))
+    return doc
 
 
 def usage(uid, since_day=None, until_day=None):
