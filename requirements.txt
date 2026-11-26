@@ -11,3 +11,4 @@ pywebpush==2.5.0
 sentry-sdk[flask]==2.19.2
 langchain-core==1.6.6
 langchain-ollama==1.1.0
+langgraph==1.2.24
