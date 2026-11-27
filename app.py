@@ -70,7 +70,6 @@ from features import extension as feature_extension  # noqa: E402
 from features import portfolio as feature_portfolio  # noqa: E402
 from features import site as feature_site  # noqa: E402
 from features import replies as feature_replies  # noqa: E402
-from features import updater as feature_updater  # noqa: E402
 from features import nearby as feature_nearby  # noqa: E402
 from features.learning import course as _learning_course, briefing as feature_briefing  # noqa: E402,F401
 from features.learning.common import bp as learning_bp  # noqa: E402
@@ -86,7 +85,7 @@ bridge.setup(sys.modules[__name__])
 feature_notify.init()
 feature_inbox.ensure_indexes()
 feature_replies.init()
-for _bp in (feature_github.bp, feature_jobs.bp, feature_linkedin.bp, feature_apps.bp, feature_notify.bp, feature_inbox.bp, feature_replies.bp, feature_portfolio.bp, feature_site.bp, feature_finder.bp, feature_ai_jobs.bp, feature_extension.bp, feature_updater.bp, feature_nearby.bp, learning_bp, research_bp):
+for _bp in (feature_github.bp, feature_jobs.bp, feature_linkedin.bp, feature_apps.bp, feature_notify.bp, feature_inbox.bp, feature_replies.bp, feature_portfolio.bp, feature_site.bp, feature_finder.bp, feature_ai_jobs.bp, feature_extension.bp, feature_nearby.bp, learning_bp, research_bp):
     app.register_blueprint(_bp)
 
 if os.environ.get("BOUNCE_WATCH", "1") == "1":

@@ -467,24 +467,3 @@ def check(ws):
                           busy="Already checking. Wait for it to finish.")
     operations.spawn(op, run_checks, ws.uid, ids, name="nearby-check")
     return jsonify(checking=operations.batch_view(ws.uid, "nearby"))
-
-
-@bp.post("/api/nearby/track/<cid>")
-@login_required
-def track(ws, cid):
-    """Add a checked company's job board to My companies, so every AI job search reads it."""
-    core = C()
-    row = next((r for r in (ws.load("nearby", {}) or {}).get("companies", []) if r["id"] == cid), None)
-    info = (ws.load("nearby_info", {}) or {}).get(cid) or {}
-    if not row or not (info.get("careers") or row.get("website")):
-        raise core.Invalid("Check this company first; Inkwell needs its careers page.")
-    from features.ai_jobs.portals import from_link, try_boards
-    link = info.get("careers") or row["website"]
-    hit = try_boards(from_link(link)) or (("site", link, [None] * (info.get("openings") or 0)) if info.get("openings") else None)
-    if not hit:
-        raise core.Invalid("Couldn't find a job board Inkwell can read for this company.")
-    ats, slug, jobs = hit
-    entry = {"ats": ats, "slug": slug, "name": row["name"][:80], "jobs": len(jobs)}
-    ws.update("ai_portals", lambda rows: ([r for r in (rows or []) if (r["ats"], r["slug"]) != (ats, slug)] + [entry])[-60:],
-              default=[])  # versioned record: no account lock; keeps the latest 60, as before
-    return jsonify(added={"name": row["name"], "jobs": len(jobs)})

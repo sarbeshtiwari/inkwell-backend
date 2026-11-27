@@ -41,6 +41,16 @@ if not _locks.transactions_supported():
 H = {"X-Requested-With": "fetch"}
 
 
+# A plain per-user read tool for tests of the runtime and tool registry (no feature depends on it).
+from infra import tools as _tools  # noqa: E402
+
+
+@_tools.tool("testing.notes", "1", "Read the user's test notes.", {"type": "object", "additionalProperties": False, "properties": {}},
+             {"type": "object"}, _tools.READ)
+def _testing_notes(ctx):
+    return ctx.workspace().load("test_notes", {}) or {}
+
+
 def patch_shared(monkeypatch, name, value, src=None):
     """Replace a shared setting or helper (e.g. WHATSAPP_ENABLED, CLOUD, send_system_email) for one test.
 
@@ -87,11 +97,3 @@ def user():
 @pytest.fixture
 def anon():
     return A.app.test_client()
-
-
-@pytest.fixture(autouse=True)
-def _no_local_model(monkeypatch):
-    """Tests never call the local AI model (Ollama) or Claude Code / Kiro, even when they're on this computer."""
-    from features.ai_jobs import cli_llm, models
-    monkeypatch.setattr(models, "ollama_up", lambda: False)
-    monkeypatch.setattr(cli_llm, "available", lambda pid: False)

@@ -6,9 +6,8 @@ from collections import Counter
 from datetime import datetime
 import requests
 
-from features.ai_jobs.common import J, OLLAMA_MODEL, OLLAMA_URL
+from features.ai_jobs.common import J
 from features.ai_jobs import siteapply
-from features.ai_jobs.sources import search_query
 
 
 STOP = set("a an and are as at be by for from has have in is it of on or our that the this to we will with you your "
@@ -121,16 +120,6 @@ def rank(profile, jobs):
     return out
 
 
-def ollama_ready():
-    if not OLLAMA_URL:
-        return False
-    try:
-        tags = requests.get(OLLAMA_URL + "/api/tags", timeout=2).json().get("models", [])
-        return any(m.get("name", "").split(":")[0] == OLLAMA_MODEL.split(":")[0] for m in tags)
-    except (requests.RequestException, ValueError):
-        return False
-
-
 def search_sources(tools, sources, profile):
     """Run the chosen search sources and drop duplicates (the same job on several sources is kept once, preferring the
     one that can be applied to). Returns (jobs, errors); a failing source becomes an error line, never a failure."""
@@ -141,10 +130,8 @@ def search_sources(tools, sources, profile):
                 found += tools["career_sites"].invoke({"role": profile["role"], "company": profile.get("company", "")})
             elif src == "remote_boards":
                 found += tools["remote_boards"].invoke({"role": profile["role"]})
-            else:
-                found += tools[src].invoke({"query": search_query(profile)})
         except Exception as e:
-            errors.append(f"{ {'tavily': 'Tavily', 'brave': 'Brave', 'remote_boards': 'Job boards'}.get(src, 'Career sites') }: {str(e)[:120]}")
+            errors.append(f"{'Job boards' if src == 'remote_boards' else 'Career sites'}: {str(e)[:120]}")
     uniq, same = {}, {}
     for j in sorted(found, key=lambda j: j["ats"] not in ("greenhouse", "lever", "ashby")):  # the same job on several sources: keep the appliable one
         key = re.sub(r"[^a-z0-9]", "", f"{j.get('company', '')}|{j['title']}".lower())

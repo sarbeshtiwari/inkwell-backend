@@ -100,11 +100,11 @@ def alerts_tell(ctx, title, body, seen):
       {"type": "object", "additionalProperties": False, "properties": {}},
       {"type": "object", "required": ["week", "strong", "due", "applied", "rate", "already_sent"]}, READ)
 def digest_figures(ctx):
-    from features.ai_jobs.tracker import due_followups, insights
+    from features.ai_jobs.tracker import applied_summary, due_followups
     ws = ctx.workspace()
     week = datetime.now().strftime("%G-W%V")
     results = (ws.load("ai_match", {}) or {}).get("results", [])
-    ins = insights(ws, 7)
+    ins = {"total": applied_summary(ws, 7)}
     return {"week": week, "strong": sum(1 for r in results if r.get("score", 0) >= 70),
             "due": sum(1 for f in due_followups(ws) if f["kind"] != "cold"), "applied": ins["total"]["total"],
             "rate": ins["total"]["rate"], "has_matches": bool(results),

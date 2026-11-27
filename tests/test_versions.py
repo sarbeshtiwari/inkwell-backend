@@ -27,7 +27,7 @@ def _clean(monkeypatch):
     monkeypatch.setitem(gateway.ADAPTERS, "fake", FakeProvider(*["answer"] * 10, model_id="fake-2026-11-01"))
 
 
-def agent(version="1", instructions="Judge fit honestly.", grants=("rules.read",), calls=1):
+def agent(version="1", instructions="Judge fit honestly.", grants=("testing.notes",), calls=1):
     def node(state, config):
         for _ in range(calls):
             models.chat({"provider": "fake", "model": "fake-latest", "uid": runtime.ctx(config).uid, "label": "x"},
@@ -56,7 +56,7 @@ def test_every_run_records_exact_versions_and_the_models_that_answered():
     run_all()
     [r] = runtime.runs_for(uid, tid)
     assert (r["agent_id"], r["agent_version"], r["instructions_version"], r["mode"], r["outcome"]) == ("analyst", "1", "ins-3", "on", "done")
-    assert r["grants"] == {"rules.read": "1"} and len(r["fingerprint"]) == 64
+    assert r["grants"] == {"testing.notes": "1"} and len(r["fingerprint"]) == 64
     assert r["models"] == [{"provider": "fake", "model_id": "fake-2026-11-01", "requested": "fake-latest", "calls": 2}]
     assert r["model_calls"] == 2 and r["input_tokens"] > 0 and r["ended"] >= r["started"]
     usage = list(A.M.model_usage.find({"task_id": tid}))
@@ -81,8 +81,8 @@ def test_a_version_cannot_change_without_a_new_number():
 
 
 def test_changing_grants_or_a_tool_version_changes_the_fingerprint():
-    a = agent(grants=("rules.read",))
-    b = agent(grants=("rules.read", "jobs.rank"))
+    a = agent(grants=("testing.notes",))
+    b = agent(grants=("testing.notes", "jobs.rank"))
     assert a.fingerprint() != b.fingerprint()
     assert agent().fingerprint() == a.fingerprint()
 

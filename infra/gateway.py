@@ -5,11 +5,10 @@ for, what asked for it, the requested model, the model id the provider actually 
 cost (when a price is on record), latency, status and error class. Prompts, answers, keys and base URLs are never
 written to it.
 
-- **Adapters.** Anthropic, OpenAI-compatible (OpenAI, Gemini, OpenRouter, Groq, Mistral, DeepSeek, local servers) and
-  Ollama live here. Others (the local Claude Code / Kiro CLIs, a fake provider in tests) are added with
+- **Adapters.** Anthropic and OpenAI-compatible live here. Others (a fake provider in tests) are added with
   register_adapter(); an adapter takes a Request and returns a Reply.
-- **Billing.** "byok" for a cloud provider with the user's own key, "local" for Ollama, CLIs and local servers. Platform
-  keys (and the budgets that must come with them) aren't wired in yet, so no call is billed to the platform.
+- **Billing.** "platform" for the Super Admin's model (infra/model_config.py), with its budgets; "byok"/"local" remain
+  only for callers that pass their own config (tests).
 - **Prices.** `model_prices` holds per-million-token prices with the date they apply from; the record keeps the price
   version used. No price on record → cost is None (never guessed).
 - **Context.** Agents and runs add correlation fields (trace, task, agent, versions) with `with context(...)`.
@@ -126,8 +125,7 @@ def complete(req):
 
 
 def _complete(req, sp):
-    adapter = ADAPTERS.get(req.provider) or (_anthropic if req.provider == "anthropic" else
-                                            _ollama if req.provider == "ollama" else _openai_compatible)
+    adapter = ADAPTERS.get(req.provider) or (_anthropic if req.provider == "anthropic" else _openai_compatible)
     from infra import budgets
     started = time.monotonic()
     reply, out, error = None, None, None
@@ -228,18 +226,6 @@ def _openai_compatible(req):
     return Reply(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "",
                  model_id=data.get("model"), input_tokens=usage.get("prompt_tokens"),
                  output_tokens=usage.get("completion_tokens"), request_id=data.get("id"))
-
-
-def _ollama(req):
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_ollama import ChatOllama
-    model = ChatOllama(base_url=req.base, model=req.model, temperature=req.temperature, num_predict=req.max_tokens,
-                       reasoning=False, keep_alive="10m", **({"format": "json"} if req.as_json else {}))
-    msg = model.invoke([SystemMessage(req.system), HumanMessage(req.human)])
-    usage = getattr(msg, "usage_metadata", None) or {}
-    meta = getattr(msg, "response_metadata", None) or {}
-    return Reply(msg.content, model_id=meta.get("model") or meta.get("model_name"),
-                 input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"))
 
 
 class FakeProvider:

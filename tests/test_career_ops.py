@@ -67,15 +67,6 @@ def test_legitimacy_tiers_and_fee_scams():
     assert signals.legitimacy(JOB, JD, {"state": "expired", "reason": "gone"})["tier"] == "Closed"
 
 
-def test_rules_need_a_stated_fact_to_break():
-    rules = {"blacklist": ["acme"], "min_salary": 150000, "currency": "USD", "remote_only": True, "max_years": 1}
-    hits = {h["rule"] for h in signals.rule_hits(JOB, JD, rules)}
-    assert "Never apply to acme" in hits and any(h.startswith("Pay at least") for h in hits) and "At most 1 years asked" in hits
-    assert not signals.rule_hits(JOB, "No salary or years here. Fully remote.", {"min_salary": 150000, "max_years": 1, "remote_only": True})
-    assert signals.rule_hits({**JOB, "url": "https://jobs.example.com/1", "company": "X"}, "", {"blacklist": ["example.com"]})
-    assert not signals.rule_hits({**JOB, "url": "https://notexample.com/1", "company": "X"}, "", {"blacklist": ["example.com"]})
-
-
 def test_pay_and_archetype():
     assert signals.pay_range(JOB, "Pay ₹18 - 25 LPA")["high"] == 2_500_000
     assert signals.pay_range(JOB, JD)["currency"] == "USD"
@@ -101,24 +92,6 @@ def test_evaluate_report_and_status(user, monkeypatch):
     assert st["results"][0]["report"]["score5"] == rep["score5"] and st["results"][0]["status"] == "evaluated"
     assert c.put(f"/api/ai-jobs/status/{JOB['id']}", json={"status": "interview"}, headers=H).get_json()["status"]["status"] == "interview"
     assert c.put(f"/api/ai-jobs/status/{JOB['id']}", json={"status": "nope"}, headers=H).status_code == 400
-
-
-def test_rules_api_and_apply_gate(user, monkeypatch):
-    c, ws = user["client"], user["ws"]
-    r = c.put("/api/ai-jobs/rules", json={"blacklist": "Acme, evil.com", "remote_only": True, "min_score_to_apply": 4}, headers=H)
-    assert r.get_json()["rules"]["blacklist"] == ["Acme", "evil.com"]
-    ws.save("ai_match", {"results": [{**JOB, "rules": [{"rule": "Never apply to Acme", "because": "Acme"}]}]})
-    ws.update_settings(auto_apply_consent=True)
-    ws.save("profile", {**ws.profile(), "phone": "+919999999999"})
-    r = c.post("/api/ai-jobs/apply", json={"ids": [JOB["id"]]}, headers=H)
-    assert r.status_code == 409 and r.get_json()["field"] == "rules"
-    patch_shared(monkeypatch, "apply_one", src=AI, value=lambda ws, job, submit=True, visible=False: {"state": "applied", "url": job["url"]})
-    assert c.post("/api/ai-jobs/apply", json={"ids": [JOB["id"]], "anyway": True}, headers=H).status_code == 200
-    for _ in range(100):
-        if not operations.running(ws.uid, "ai_apply"):
-            break
-        time.sleep(0.05)
-    assert ws.load("ai_pipeline", {})[JOB["id"]]["status"] == "applied"
 
 
 def test_closed_postings_are_never_applied_to(user, monkeypatch):
@@ -155,15 +128,6 @@ def test_followup_cadence(user):
     assert next(f for f in later if f["id"] == "a1")["count"] == 1
 
 
-def test_insights(user):
-    c, ws = user["client"], user["ws"]
-    day = (datetime.now() - timedelta(days=5)).isoformat(timespec="seconds")
-    ws.save("applications", {f"a{i}": {"id": f"a{i}", "company": "X", "role": "Dev", "status": "interview" if i < 2 else "applied",
-                                       "portal": "Naukri", "applied_at": day, "updated_at": day, "history": []} for i in range(5)})
-    ins = c.get("/api/ai-jobs/insights", headers=H).get_json()["insights"]
-    assert ins["total"]["total"] == 5 and ins["total"]["rate"] == 40 and ins["by_portal"][0]["name"] == "Naukri"
-
-
 def test_cover_letter_drafts_without_a_model(user, monkeypatch):
     c, ws = user["client"], user["ws"]
     ws.save("ai_match", {"want": {"role": "Full Stack Developer", "years": 3}, "results": [JOB]})
@@ -182,7 +146,7 @@ def test_remote_boards_and_dedup(monkeypatch):
     monkeypatch.setattr(boards, "search_boards", lambda location="": {"x": fake})
     patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: [{**JOB, "text": JD}] if board == "acme" else [])
     patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
-    jobs, _ = AI.search_sources(AI.make_tools({}), ["career_sites", "remote_boards"],
+    jobs, _ = AI.search_sources(AI.make_tools(), ["career_sites", "remote_boards"],
                                 {"role": "Full Stack Developer", "company": "", "location": ""})
     assert [j["id"] for j in jobs] == [JOB["id"]]  # the same job from a remote board is dropped; the appliable one stays
     assert jobs[0]["text"].startswith("About the role")

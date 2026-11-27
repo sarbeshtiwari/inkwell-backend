@@ -5,11 +5,9 @@ Follow-ups are drafts only: Inkwell never sends them. The user copies the text, 
 then marks it sent so the next one is scheduled."""
 
 import re
-import time
 from datetime import datetime, timedelta
-from statistics import median
 
-from flask import jsonify, request
+from flask import jsonify
 from bridge import login_required
 
 from features.ai_jobs.common import C, bp
@@ -38,22 +36,7 @@ def set_status(ws, jid, status, only_if_new=False, note=""):
         row.update(status=status, at=now, note=note[:200] if note else row.get("note", ""))
         pipe[jid] = row
         ws.save("ai_pipeline", pipe)
-    learn(ws, jid, status)
     return row
-
-
-def learn(ws, jid, status):
-    """What you did with a job is a lesson too (applied, interview, offer…); see learning.py."""
-    from features.ai_jobs import learning
-    if status not in learning.WEIGHTS:
-        return
-    try:
-        job = next((r for r in (ws.load("ai_match", {}) or {}).get("results", []) if r["id"] == jid), None) \
-            or (ws.load("ai_reports", {}) or {}).get(jid)
-        if job and job.get("title"):
-            learning.record(ws, {**job, "id": jid}, status, jd=(ws.load("ai_jds", {}) or {}).get(jid, ""))
-    except Exception as e:
-        print(f"[Inkwell] learning skipped: {e!r}", flush=True)
 
 
 @bp.put("/api/ai-jobs/status/<jid>")
@@ -66,39 +49,6 @@ def put_status(ws, jid):
 
 
 # --- my rules -------------------------------------------------------------------------------------------------
-
-def words(value, n=30, size=80):
-    items = value if isinstance(value, list) else re.split(r"[\n,]", str(value or ""))
-    return [str(x).strip()[:size] for x in items if str(x).strip()][:n]
-
-
-@bp.get("/api/ai-jobs/rules")
-@login_required
-def get_rules_api(ws):
-    from features.ai_jobs.evaluate import get_rules
-    return jsonify(rules=get_rules(ws))
-
-
-@bp.put("/api/ai-jobs/rules")
-@login_required
-def put_rules(ws):
-    core = C()
-    p = core.body()
-    try:
-        floor = float(str(p.get("min_salary") or 0).replace(",", ""))
-        score = float(p.get("min_score_to_apply") or 0)
-    except ValueError:
-        raise core.Invalid("Enter numbers for pay and score.", "min_salary")
-    rules = {"blacklist": words(p.get("blacklist"), 100), "targets": words(p.get("targets"), 12), "avoid_words": words(p.get("avoid_words"), 30, 40),
-             "min_salary": max(0.0, min(floor, 1e10)), "currency": str(p.get("currency") or "").upper()[:3],
-             "remote_only": bool(p.get("remote_only")), "no_contract": bool(p.get("no_contract")),
-             "need_sponsorship": bool(p.get("need_sponsorship")),
-             "max_years": core.v_int(p.get("max_years") or 0, "max_years", "Years", 0, 40),
-             "min_score_to_apply": max(0.0, min(score, 5.0)), "followups": bool(p.get("followups", True)),
-             "followup_days": core.v_int(p.get("followup_days") or 7, "followup_days", "Follow-up days", 3, 30)}
-    ws.save("ai_rules", rules)
-    return jsonify(rules=rules)
-
 
 # --- follow-up cadence ----------------------------------------------------------------------------------------
 
@@ -141,14 +91,13 @@ def draft(kind, app, name, count):
             f"filled, no problem, and thank you for your time. If it's still open, I'd be glad to talk.{sign}")
 
 
+FOLLOWUP_DAYS = 7
+
+
 def due_followups(ws, today=None):
     """career-ops' cadence: applied → follow up after N days (default 7), then again N days later, at most twice, then
     the application goes cold. Responded → reply within a day, then every 3 days. Interview → thank-you the next day."""
-    from features.ai_jobs.evaluate import get_rules
-    rules = get_rules(ws)
-    if not rules.get("followups", True):
-        return []
-    every = rules.get("followup_days") or 7
+    every = FOLLOWUP_DAYS
     today = today or datetime.now()
     sent = ws.load("ai_followups", {}) or {}
     name = ws.profile().get("name", "").strip()
@@ -228,78 +177,14 @@ def mark_followup(ws, aid):
 
 # --- patterns -------------------------------------------------------------------------------------------------
 
-def band(score):
-    return "4.5+" if score >= 4.5 else "4.0–4.4" if score >= 4.0 else "3.5–3.9" if score >= 3.5 else "below 3.5"
-
-
-def rate(rows):
-    heard = sum(1 for r in rows if r["heard"])
-    return {"total": len(rows), "heard": heard, "rate": round(100 * heard / len(rows)) if rows else 0,
-            "interviews": sum(1 for r in rows if r["interview"])}
-
-
-def insights(ws, days=180):
-    """What got replies: by score band, archetype, remote mode and where you applied; plus why jobs were skipped."""
+def applied_summary(ws, days=7):
+    """Applications in the last `days`: how many, how many heard back (any status past applied), interviews, reply rate.
+    Used by the weekly digest and the morning briefing."""
     since = datetime.now() - timedelta(days=days)
-    reports = ws.load("ai_reports", {}) or {}
-    by_url = {r.get("url"): r for r in reports.values() if r.get("url")}
-    rows = []
-    for a in (ws.load("applications", {}) or {}).values():
-        if a.get("merged_into") or a.get("hidden") or (parse_day(a.get("applied_at")) or since) < since:
-            continue
-        st = a.get("status") or "applied"
-        hist = a.get("history", [])
-        first = next((h for h in hist if h.get("status") not in ("applied", "incomplete")), None)
-        lag = None
-        if first and parse_day(a.get("applied_at")) and parse_day(first.get("at")):
-            lag = max(0, (parse_day(first["at"]) - parse_day(a["applied_at"])).days)
-        rep = by_url.get(a.get("url"))
-        rows.append({"heard": st not in ("applied", "incomplete"), "interview": st in ("interview", "offer") or a.get("contacted"),
-                     "status": st, "portal": a.get("portal") or "Other", "lag": lag,
-                     "band": band(rep["score5"]) if rep else "",
-                     "archetype": rep["summary"]["archetype"] if rep else "", "remote": rep["summary"]["remote"] if rep else ""})
-
-    def group(key):
-        out = {}
-        for r in rows:
-            if r[key]:
-                out.setdefault(r[key], []).append(r)
-        return sorted(({"name": k, **rate(v)} for k, v in out.items()), key=lambda x: -x["total"])[:8]
-
-    total = rate(rows)
-    funnel = {k: sum(1 for r in rows if r["status"] == k) for k in ("applied", "in_review", "shortlisted", "assessment", "interview",
-                                                                    "offer", "rejected", "closed", "withdrawn")}
-    lags = [r["lag"] for r in rows if r["lag"] is not None]
-    pipe = ws.load("ai_pipeline", {}) or {}
-    skipped = {}
-    for p in pipe.values():
-        if p.get("status") == "skip" and p.get("note"):
-            skipped[p["note"]] = skipped.get(p["note"], 0) + 1
-    tips = []
-    bands = {b["name"]: b for b in group("band")}
-    hi, lo = bands.get("4.5+") or bands.get("4.0–4.4"), bands.get("below 3.5") or bands.get("3.5–3.9")
-    if hi and lo and hi["total"] >= 3 and lo["total"] >= 3 and hi["rate"] > lo["rate"]:
-        tips.append(f"Jobs scored {hi['name']} got replies {hi['rate']}% of the time, vs {lo['rate']}% for {lo['name']}: "
-                    "apply to fewer, better-fitting jobs.")
-    if total["total"] >= 10 and total["rate"] < 10:
-        tips.append("Under 10% of applications got a reply. Evaluate before applying, tailor the summary and cover letter, "
-                    "and follow up after a week.")
-    portals = group("portal")
-    if len(portals) >= 2 and portals[0]["total"] >= 3:
-        best = max(portals, key=lambda x: (x["rate"], x["total"]))
-        if best["rate"] > total["rate"]:
-            tips.append(f"{best['name']} works best for you so far ({best['rate']}% replies).")
-    if not rows:
-        tips.append("No applications yet in this period. Once you apply, this shows what gets replies.")
-    return {"days": days, "total": total, "funnel": funnel, "by_band": group("band"), "by_archetype": group("archetype"),
-            "by_remote": group("remote"), "by_portal": portals, "median_days_to_reply": median(lags) if lags else None,
-            "pipeline": {k: sum(1 for p in pipe.values() if p.get("status") == k) for k in STATES},
-            "skipped_because": sorted(({"rule": k, "count": v} for k, v in skipped.items()), key=lambda x: -x["count"])[:6],
-            "tips": tips, "evaluated": len(reports)}
+    rows = [a for a in (ws.load("applications", {}) or {}).values()
+            if not a.get("merged_into") and not a.get("hidden") and (parse_day(a.get("applied_at")) or since) >= since]
+    heard = sum(1 for a in rows if (a.get("status") or "applied") not in ("applied", "incomplete"))
+    return {"total": len(rows), "heard": heard, "rate": round(100 * heard / len(rows)) if rows else 0,
+            "interviews": sum(1 for a in rows if a.get("status") in ("interview", "offer") or a.get("contacted"))}
 
 
-@bp.get("/api/ai-jobs/insights")
-@login_required
-def get_insights(ws):
-    days = C().v_int(request.args.get("days", 180), "days", "Period", 7, 730)
-    return jsonify(insights=insights(ws, days), at=time.time())

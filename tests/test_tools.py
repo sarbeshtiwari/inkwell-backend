@@ -22,10 +22,10 @@ def ctx(uid, *grants, mode="on", agent_id="job_analyst"):
     return ToolContext(uid=uid, grants=frozenset(grants), mode=mode, agent_id=agent_id)
 
 
-def save_rules(uid, **rules):
+def save_notes(uid, **notes):
     ws = A.Workspace(uid)
     with ws.lock:
-        ws.save("ai_rules", rules)
+        ws.save("test_notes", notes)
 
 
 EMPTY = {"type": "object", "additionalProperties": False, "properties": {}}
@@ -33,7 +33,7 @@ EMPTY = {"type": "object", "additionalProperties": False, "properties": {}}
 
 def test_registered_agent_tools_are_read_only_and_well_formed():
     ids = {t["id"] for t in tools.describe()}
-    assert {"profile.candidate", "rules.read", "preferences.taste", "jobs.search", "jobs.rank", "jobs.liveness"} <= ids
+    assert {"profile.candidate", "jobs.search", "jobs.rank", "jobs.liveness"} <= ids
     for t in tools.describe():
         if not t["id"].startswith("test."):
             assert t["input_schema"]["additionalProperties"] is False
@@ -47,7 +47,7 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
                                                 "alerts.tell", "digest.send", "matches.save",
                                                 "finder.record", "finder.save") else "read"
             assert t["risk"] == expected
-    assert [t["id"] for t in tools.describe({"rules.read"})] == ["rules.read"]
+    assert [t["id"] for t in tools.describe({"testing.notes"})] == ["testing.notes"]
 
 
 def test_registration_refuses_open_input_schemas_and_bad_ids():
@@ -64,13 +64,13 @@ def test_registration_refuses_open_input_schemas_and_bad_ids():
 def test_tools_act_for_the_context_user_only():
     a, _ = make_user()
     b, _ = make_user()
-    save_rules(a, blacklist=["acme-for-a"])
-    save_rules(b, blacklist=["globex-for-b"])
-    assert tools.call(ctx(a, "rules.read"), "rules.read")["blacklist"] == ["acme-for-a"]
-    assert tools.call(ctx(b, "rules.read"), "rules.read")["blacklist"] == ["globex-for-b"]
+    save_notes(a, blacklist=["acme-for-a"])
+    save_notes(b, blacklist=["globex-for-b"])
+    assert tools.call(ctx(a, "testing.notes"), "testing.notes")["blacklist"] == ["acme-for-a"]
+    assert tools.call(ctx(b, "testing.notes"), "testing.notes")["blacklist"] == ["globex-for-b"]
     for smuggled in ({"uid": b}, {"user_id": b}, {"ws": b}):  # a model can't choose whose data a tool reads
         with pytest.raises(tools.InvalidArguments, match="unexpected field"):
-            tools.call(ctx(a, "rules.read"), "rules.read", smuggled)
+            tools.call(ctx(a, "testing.notes"), "testing.notes", smuggled)
 
 
 def test_context_needs_a_user_and_a_known_mode():
@@ -79,14 +79,14 @@ def test_context_needs_a_user_and_a_known_mode():
     with pytest.raises(ValueError):
         ToolContext(uid="u1", grants=frozenset(), mode="yolo")
     with pytest.raises(TypeError):
-        tools.call({"uid": "u1", "grants": {"rules.read"}}, "rules.read")  # a plain dict is not a context
+        tools.call({"uid": "u1", "grants": {"testing.notes"}}, "testing.notes")  # a plain dict is not a context
 
 
 def test_ungranted_tools_are_refused_and_audited():
     a, _ = make_user()
     with pytest.raises(tools.ToolDenied, match="may not use"):
-        tools.call(ctx(a, "jobs.rank"), "rules.read")
-    ev = A.M.audit_log.find_one({"action": "access.denied", "target": "tool:rules.read", "actor": a})
+        tools.call(ctx(a, "jobs.rank"), "testing.notes")
+    ev = A.M.audit_log.find_one({"action": "access.denied", "target": "tool:testing.notes", "actor": a})
     assert ev and ev["details"]["reason"] == "not_granted"
     with pytest.raises(tools.ToolNotFound):
         tools.call(ctx(a, "nope.tool"), "nope.tool")
@@ -118,8 +118,8 @@ def test_kill_switch_stops_tool_calls(monkeypatch):
     rbac.reconcile()
     controls.set_switch(admin, agent_id="job_analyst", reason="stop analyst")
     with pytest.raises(tools.ToolDenied, match="kill switch"):
-        tools.call(ctx(a, "rules.read"), "rules.read")
-    assert tools.call(ctx(a, "rules.read", agent_id="job_scout"), "rules.read") is not None
+        tools.call(ctx(a, "testing.notes"), "testing.notes")
+    assert tools.call(ctx(a, "testing.notes", agent_id="job_scout"), "testing.notes") is not None
 
 
 def test_arguments_and_results_are_validated():
@@ -147,7 +147,7 @@ def test_rank_tool_runs_the_real_engine_with_the_context_users_resume(monkeypatc
     assert "text" not in out[0] and out[0]["reasons"]
 
 
-def test_search_tool_reuses_sources_and_skips_keyless_web_search(monkeypatch):
+def test_search_tool_reuses_sources_and_refuses_unknown_ones(monkeypatch):
     a, _ = make_user()
     calls = []
 
@@ -159,13 +159,13 @@ def test_search_tool_reuses_sources_and_skips_keyless_web_search(monkeypatch):
             calls.append(args)
             return self.jobs
     same = {"id": "gh:a:1", "title": "Dev", "company": "A", "ats": "greenhouse", "url": "u", "text": ""}
-    monkeypatch.setattr(agent_tools, "make_tools", lambda keys, portals, location: {
+    monkeypatch.setattr(agent_tools, "make_tools", lambda location="": {
         "career_sites": FakeTool([same, {**same, "id": "site:a:1", "ats": "site"}]), "remote_boards": FakeTool([])})
-    out = tools.call(ctx(a, "jobs.search"), "jobs.search", {"role": "dev", "sources": ["career_sites", "tavily"]})
+    out = tools.call(ctx(a, "jobs.search"), "jobs.search", {"role": "dev", "sources": ["career_sites"]})
     assert [j["id"] for j in out["jobs"]] == ["gh:a:1"]  # duplicate across sources kept once
-    assert out["errors"] == ["tavily: no search key saved"] and calls == [{"role": "dev", "company": ""}]
+    assert out["errors"] == [] and calls == [{"role": "dev", "company": ""}]
     with pytest.raises(tools.InvalidArguments):
-        tools.call(ctx(a, "jobs.search"), "jobs.search", {"role": "dev", "sources": ["linkedin"]})
+        tools.call(ctx(a, "jobs.search"), "jobs.search", {"role": "dev", "sources": ["tavily"]})
 
 
 def test_liveness_tool(monkeypatch):
@@ -177,15 +177,15 @@ def test_liveness_tool(monkeypatch):
 
 def test_tool_calls_write_spans_without_arguments_or_results():
     a, _ = make_user()
-    save_rules(a, blacklist=["SECRET-COMPANY-NAME"])
+    save_notes(a, blacklist=["SECRET-COMPANY-NAME"])
     with telemetry.trace(a, "x") as tid:
-        tools.call(ctx(a, "rules.read"), "rules.read")
+        tools.call(ctx(a, "testing.notes"), "testing.notes")
         with pytest.raises(tools.ToolDenied):
-            tools.call(ctx(a), "rules.read")
+            tools.call(ctx(a), "testing.notes")
     spans = list(A.M.spans.find({"trace_id": tid}).sort("start", 1))
     assert [(s["tool_id"], s["status"], s["error_class"]) for s in spans] == [
-        ("rules.read", "ok", None), ("rules.read", "error", "permission_denied")]
-    assert "SECRET-COMPANY-NAME" not in repr(spans) and "rules.read@1 (read) ok" in spans[0]["summary"]
+        ("testing.notes", "ok", None), ("testing.notes", "error", "permission_denied")]
+    assert "SECRET-COMPANY-NAME" not in repr(spans) and "testing.notes@1 (read) ok" in spans[0]["summary"]
 
 
 def test_schema_validator_edge_cases():

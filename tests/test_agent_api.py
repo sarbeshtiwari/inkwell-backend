@@ -39,7 +39,7 @@ def _setup(monkeypatch):
         g.add_edge(START, "judge")
         g.add_edge("judge", END)
         return g
-    runtime.register_agent(runtime.Agent("judge", "1", "i1", frozenset({"rules.read"}), build, description="test agent"))
+    runtime.register_agent(runtime.Agent("judge", "1", "i1", frozenset({"testing.notes"}), build, description="test agent"))
 
 
 @pytest.fixture

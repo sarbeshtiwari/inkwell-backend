@@ -2,8 +2,8 @@
 today's goal and lesson, the job-search report, two recent papers, tech news, new GitHub repositories and
 companies worth a look.
 
-Items come from public feeds (arXiv, Hacker News, GitHub search) so every link is real; when Claude Code / Kiro
-is the AI, it adds a short "why it matters" and today's focus, written only from those items. Built once a day
+Items come from public feeds (arXiv, Hacker News, GitHub search) so every link is real; when the platform model
+is set, it adds a short "why it matters" and today's focus, written only from those items. Built once a day
 (after 07:00 in the user's mail-sync time zone) or on demand; the last 14 days are kept."""
 
 import datetime as dt
@@ -75,10 +75,10 @@ def repositories(seen):
 def job_report(ws):
     """Inkwell's own report (Morrow's report.md, built from data only): yesterday's applications, replies,
     follow-ups due and strong matches you haven't applied to."""
-    from features.ai_jobs.tracker import due_followups, insights
+    from features.ai_jobs.tracker import applied_summary, due_followups
     out = {"applied": 0, "heard": 0, "interviews": 0, "followups": [], "matches": []}
     try:
-        t = insights(ws, 1)["total"]
+        t = applied_summary(ws, 1)
         out.update(applied=t["total"], heard=t["heard"], interviews=t["interviews"])
     except Exception:
         pass
@@ -96,10 +96,10 @@ def job_report(ws):
 
 
 def ai_notes(ws, b):
-    """Today's focus and one line per item, from Claude Code / Kiro (or any configured model); none without one."""
+    """Today's focus and one line per item, from the platform model; none without one."""
     from features.ai_jobs import models
     cfg = models.config(ws)
-    if not cfg or cfg["provider"] == "ollama":
+    if not cfg:
         return {}
     items = {"lesson": b["goal"]["title"], "dsa": b["goal"]["dsa"],
              "papers": [p["title"] + ": " + p["summary"][:300] for p in b["papers"]],

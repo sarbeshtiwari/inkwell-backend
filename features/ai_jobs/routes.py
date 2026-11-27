@@ -53,27 +53,6 @@ def run_apply(op, uid, picks, visible=False):
                "/app/ai-jobs", "application")
 
 
-def gate(ws, picks, anyway):
-    """career-ops' gates before applying: the user's own rules (blacklist, dealbreakers) and their minimum score.
-    The user's call always wins: "apply anyway" skips the gate for jobs they picked."""
-    from features.ai_jobs.evaluate import get_rules
-    rules = get_rules(ws)
-    reports = ws.load("ai_reports", {}) or {}
-    floor = rules.get("min_score_to_apply") or 0
-    stopped = []
-    for r in picks:
-        why = r.get("rules") or []
-        rep = reports.get(r["id"])
-        if why:
-            stopped.append(f"{r['company']}: {why[0]['rule']}")
-        elif floor and rep and rep["score5"] < floor:
-            stopped.append(f"{r['company']}: scored {rep['score5']}/5, below your minimum of {floor}")
-    if stopped and not anyway:
-        raise C().Invalid("Some picks break your rules: " + "; ".join(stopped[:4]) + (" …" if len(stopped) > 4 else "") +
-                          ". Untick them, or apply anyway.", "rules", status=409)
-    return picks
-
-
 @bp.post("/api/ai-jobs/apply")
 @login_required
 def apply(ws):
@@ -86,7 +65,6 @@ def apply(ws):
     picks = [r for r in run.get("results", []) if r["id"] in ids and r.get("can_apply") and (done.get(r["id"]) or {}).get("state") != "applied"]
     if not picks:
         raise core.Invalid("Pick at least one job that can be applied to automatically.")
-    picks = gate(ws, picks, bool(core.body().get("anyway")))
     if not ws.profile().get("phone"):
         raise core.Invalid("Add your phone number on the Profile page first; application forms ask for it.", "phone")
     if operations.running(ws.uid, "ai_apply"):

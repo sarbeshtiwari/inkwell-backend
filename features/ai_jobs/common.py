@@ -13,12 +13,6 @@ import bridge
 bp = Blueprint("ai_jobs", __name__)
 
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "" if os.environ.get("APP_ENV") == "production" else "http://127.0.0.1:11434").rstrip("/")
-
-
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
-
-
 APPLY_PER_DAY = 20
 
 

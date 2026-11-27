@@ -368,37 +368,3 @@ def host_of(url):
 def same_name(a, b):
     k = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
     return bool(k(a)) and k(a) == k(b)
-
-
-def rule_hits(job, jd, rules):
-    """Each hard rule this job breaks: [(rule, the words that break it)]. A missing fact never breaks a rule
-    (no salary shown never breaks a pay floor; no years stated never breaks an experience cap)."""
-    hits = []
-    for b in rules.get("blacklist", []):
-        b = b.strip()
-        if not b:
-            continue
-        host = host_of(job.get("url", ""))
-        if same_name(b, job.get("company")) or ("." in b and (host == b.lower() or host.endswith("." + b.lower()))):
-            hits.append((f"Never apply to {b}", job.get("company") or host))
-    text = norm_text(jd)
-    pay = pay_range(job, jd)
-    floor = rules.get("min_salary") or 0
-    if floor and pay and pay.get("high") and (not rules.get("currency") or pay["currency"] == rules["currency"]) and pay["high"] < floor:
-        hits.append((f"Pay at least {rules.get('currency', '')} {floor:,.0f}".strip(), pay["text"]))
-    mode = remote_mode(job, jd)
-    if rules.get("remote_only") and mode in ("On-site", "Hybrid"):
-        hits.append(("Remote only", f"{mode}: {job.get('location') or 'stated in the description'}"))
-    if rules.get("no_contract") and (m := CONTRACTOR.search(text) or re.search(r"\b(contract (?:role|position)|fixed[- ]term)\b", text, re.I)):
-        hits.append(("No contract roles", m.group(0)))
-    if rules.get("need_sponsorship") and (m := re.search(r"(?:no|not|unable to|cannot|can't|won't) (?:provide |offer )?"
-                                                          r"(?:visa )?sponsor\w*", text, re.I)):
-        hits.append(("I need visa sponsorship", m.group(0)))
-    from features.ai_jobs.ranking import years_asked
-    ask = years_asked(jd)
-    if rules.get("max_years") and ask and ask[0] > rules["max_years"]:
-        hits.append((f"At most {rules['max_years']} years asked", f"asks {ask[0]}+ years"))
-    for word in rules.get("avoid_words", []):
-        if word.strip() and re.search(rf"\b{re.escape(word.strip())}\b", f"{job['title']} {text}", re.I):
-            hits.append((f"Avoid \"{word.strip()}\"", word.strip()))
-    return [{"rule": r, "because": w} for r, w in hits]

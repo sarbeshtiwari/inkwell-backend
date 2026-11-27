@@ -25,13 +25,6 @@ from features.ai_jobs.ranking import cosine, tokens, years_asked
 from features.ai_jobs import models, signals
 
 
-DEFAULT_RULES = {"blacklist": [], "min_salary": 0, "currency": "", "remote_only": False, "no_contract": False,
-                 "need_sponsorship": False, "max_years": 0, "avoid_words": [], "targets": [], "min_score_to_apply": 0.0,
-                 "followups": True, "followup_days": 7}
-
-
-def get_rules(ws):
-    return {**DEFAULT_RULES, **(ws.load("ai_rules", {}) or {})}
 
 
 def find_job(ws, jid):
@@ -221,7 +214,7 @@ def verdict_for(score):
     return "Recommend against applying"
 
 
-def score_job(job, summary, rows, kw, legit, clarity, hits, rules, ai):
+def score_job(job, summary, rows, kw, legit, clarity, ai):
     """Five dimensions (1–5) with evidence status, the global score, and how sure we are."""
     strong = sum(r["match"] == "Strong" for r in rows)
     partial = sum(r["match"] == "Partial" for r in rows)
@@ -240,27 +233,20 @@ def score_job(job, summary, rows, kw, legit, clarity, hits, rules, ai):
     pay = summary["pay"]
     if not pay or not pay.get("high"):
         comp, comp_ev = 3, "unknown"
-    elif rules.get("min_salary") and (not rules.get("currency") or pay["currency"] == rules["currency"]):
-        comp = 5 if pay["high"] >= rules["min_salary"] * 1.2 else 4 if pay["high"] >= rules["min_salary"] else 2
-        comp_ev = "supported"
     else:
         comp, comp_ev = 3, "partial"
     present = sum(p["status"] == "present" for p in clarity["points"])
     culture = 3 + (1 if present >= 4 else 0) - (1 if clarity["ask_before"] else 0)
-    if rules.get("remote_only") and summary["remote"] in ("On-site", "Hybrid"):
-        culture = min(culture, 2)
     if isinstance(ai.get("culture"), (int, float)):
         culture = round((culture + max(1, min(5, ai["culture"]))) / 2)
     concerning = sum(s["weight"] == "Concerning" for s in legit["signals"])
-    red = max(1, 5 - concerning - 2 * len(hits) - (1 if legit["flags"] else 0))
+    red = max(1, 5 - concerning - (1 if legit["flags"] else 0))
     dims = [{"name": "Match with your resume", "score": max(1, min(5, match)), "evidence": "supported" if rows else "partial"},
-            {"name": "Fits what you want", "score": north, "evidence": "supported" if rules.get("targets") else "partial"},
+            {"name": "Fits what you want", "score": north, "evidence": "partial"},
             {"name": "Pay", "score": comp, "evidence": comp_ev},
             {"name": "Culture signals", "score": max(1, min(5, culture)), "evidence": "partial" if present < 4 else "supported"},
             {"name": "Red flags", "score": red, "evidence": "supported" if legit["signals"] else "partial"}]
     total = 0.4 * dims[0]["score"] + 0.25 * north + 0.1 * comp + 0.1 * dims[3]["score"] + 0.15 * red
-    if hits:
-        total = min(total, 2.5)
     if legit["tier"] == "Suspicious":
         total = min(total, 3.0)
     if legit["tier"] == "Closed":
@@ -272,8 +258,6 @@ def score_job(job, summary, rows, kw, legit, clarity, hits, rules, ai):
     gaps_to_check = []
     if comp_ev == "unknown":
         gaps_to_check.append("Pay isn't stated: ask the recruiter for the range")
-    if not rules.get("targets"):
-        gaps_to_check.append("Add the kinds of roles you target in My rules, so fit is judged against them")
     if clarity["ask_before"]:
         gaps_to_check.append("The posting doesn't say who you'd report to or how success is measured")
     if len(job.get("summary", "")) < 300 or unknown >= 2:
@@ -311,21 +295,19 @@ def _evaluate(ws, job, check_live):
     resume = resume_for(ws)
     run = ws.load("ai_match", {})
     want = run.get("want") or {}
-    rules = get_rules(ws)
     profile = {"role": want.get("role", ""), "years": want.get("years", 0), "resume": resume}
     live = signals.liveness(job) if check_live else None
-    summary = signals.role_summary(job, jd, rules.get("targets") or ([want["role"]] if want.get("role") else []))
-    if not rules.get("targets"):
+    summary = signals.role_summary(job, jd, [want["role"]] if want.get("role") else [])
+    if not want.get("role"):
         summary["targeted"] = None
     kw = signals.keyword_coverage(f"{job['title']} {jd}", resume)
     clarity = signals.role_clarity(jd)
     legit = signals.legitimacy(job, raw, live, scan_reposts(ws, job))
-    hits = signals.rule_hits(job, jd, rules)
     reqs = requirements(jd)
     rows, gaps = match_requirements(reqs, resume, profile["years"] or 0)
     use_model = bool(models.current()) and legit["tier"] != "Closed"
     ai = llm_blocks(profile, job, jd, reqs) if use_model else {}
-    dims, score5, conf, conf_gaps = score_job(job, summary, rows, kw, legit, clarity, hits, rules, ai)
+    dims, score5, conf, conf_gaps = score_job(job, summary, rows, kw, legit, clarity, ai)
     pay = summary["pay"]
     level = summary["seniority"]
     stories = ai.get("stories") if isinstance(ai.get("stories"), list) else []
@@ -345,7 +327,7 @@ def _evaluate(ws, job, check_live):
         "id": job["id"], "at": time.time(), "engine": f"Inkwell AI + {models.current()['label']}" if ai else "Inkwell AI",
         "title": job["title"], "company": job["company"], "url": job["url"],
         "score5": score5, "verdict": verdict_for(score5), "confidence": conf, "checks": conf_gaps, "dimensions": dims,
-        "live": live, "rules": hits,
+        "live": live,
         "summary": {**summary, "tldr": str(ai.get("tldr") or f"{level} {summary['archetype']} role at {job['company']}, "
                                          f"{summary['remote'].lower()}.")[:300]},
         "match": {"rows": rows, "gaps": gaps},
@@ -377,9 +359,8 @@ def save_report(ws, report):
                 reports.pop(k)
         ws.save("ai_reports", reports)
     from features.ai_jobs.tracker import set_status
-    status = "skip" if report["rules"] else "discarded" if (report.get("live") or {}).get("state") == "expired" else None
-    set_status(ws, report["id"], status or "evaluated", only_if_new=status is None,
-               note=report["rules"][0]["rule"] if report["rules"] else "")
+    status = "discarded" if (report.get("live") or {}).get("state") == "expired" else None
+    set_status(ws, report["id"], status or "evaluated", only_if_new=status is None)
     for a in report.get("answers", []):  # drafts go to My answers to review
         from features.ai_jobs.answers import save_answer
         save_answer(ws, a["question"], a["answer"], report["company"] if re.search(r"why|interest|excite", a["question"], re.I) else "",
@@ -404,7 +385,7 @@ def run_batch(op, uid, jids):
 
 def report_brief(r):
     return {"score5": r["score5"], "verdict": r["verdict"], "tier": r["legitimacy"]["tier"], "confidence": r["confidence"],
-            "rules": len(r["rules"]), "live": (r.get("live") or {}).get("state")}
+            "live": (r.get("live") or {}).get("state")}
 
 
 @bp.post("/api/ai-jobs/evaluate/<jid>")
