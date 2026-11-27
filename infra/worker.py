@@ -1,6 +1,6 @@
 """Agent worker: runs queued tasks (infra/tasks.py) outside the web process.
 
-    python -m infra.worker              # from backend/; AGENT_WORKER_THREADS (default 2) tasks at a time
+    python -m infra.worker              # from backend/; AGENT_WORKER_THREADS (default 1) tasks at a time
 
 It connects to the same database as the web app (MONGODB_URI / MONGODB_DB, .env locally), loads the modules that
 register tools, agents and task handlers, and runs that many worker loops. It doesn't serve HTTP and doesn't start the
@@ -12,7 +12,8 @@ and another worker resumes it from its last checkpoint. The worker can't stop a 
 started (an approved external action) is covered by the approval record, which never repeats it automatically.
 
 In-process alternative for local development: start(n) runs the same loops as daemon threads of the current process
-(the web app does this when AGENT_WORKER_THREADS is set in its own environment)."""
+(the web app does this at startup with its background loops; AGENT_WORKER_THREADS=0 turns it off there when a
+separate worker runs the tasks)."""
 
 import logging
 import os
@@ -23,7 +24,7 @@ import threading
 
 log = logging.getLogger("inkwell.worker")
 
-HANDLER_MODULES = ("features.ai_jobs", "features.agent_communicator", "features.agent_inbox", "infra.supervisor")  # importing these registers their tools, agents and task handlers
+HANDLER_MODULES = ("features.ai_jobs", "features.agent_communicator", "features.agent_inbox", "features.agent_outreach", "features.agent_morning", "features.agent_career", "infra.supervisor")  # importing these registers their tools, agents and task handlers
 
 
 def _int(name, default):
@@ -70,7 +71,7 @@ class Pool:
 
 def start(n=None):
     """Run n worker loops in this process (daemon threads). Returns the Pool, or None when n is 0."""
-    n = _int("AGENT_WORKER_THREADS", 2) if n is None else n
+    n = _int("AGENT_WORKER_THREADS", 1) if n is None else n
     if n <= 0:
         return None
     load_handlers()

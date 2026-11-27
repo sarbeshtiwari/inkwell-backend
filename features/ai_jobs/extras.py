@@ -512,6 +512,9 @@ def weekly_digest_all():
             strong = sum(1 for r in ws.load("ai_match", {}).get("results", []) if r.get("score", 0) >= 70)
             due = sum(1 for f in due_followups(ws) if f["kind"] != "cold")
             ins = insights(ws, 7)
+            from features.replies import hand_to_agent
+            if hand_to_agent(ws.uid, "weekly_digest", {}, f"weekly-digest:{week}"):
+                continue  # agents on for this account: the Weekly Digest agent writes and sends it
             if not schedule.once(f"weekly-digest:{week.lower()}", ws.uid):
                 continue  # already sent this week (another process, or before a crash)
             notify(ws.uid, "Your job search this week",

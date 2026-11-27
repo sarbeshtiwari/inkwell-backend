@@ -490,10 +490,26 @@ def tick():
             continue
         if not schedule.claim("reply-check", CHECK_EVERY, uid):
             continue
+        if hand_to_agent(uid, "communicator", {"check": True}, f"reply-check:{int(now // CHECK_EVERY)}"):
+            continue  # agents on for this account: the Communicator reads the mailbox and handles what it finds
         try:
             bridge.with_deadline(240, scan, ws)
         except Exception as e:
             print(f"[Inkwell] reply check skipped for an account: {getattr(e, 'message', e)}", flush=True)
+
+
+def hand_to_agent(uid, agent_id, input, key):
+    """For an account whose agent switch is On, queue `agent_id` (once per key) and return True; otherwise False
+    (the plain background job runs as before). Never raises: if the hand-off fails the plain job runs."""
+    try:
+        from infra import runtime
+        if runtime.user_mode(uid) != "on" or agent_id not in runtime.AGENTS:
+            return False
+        runtime.start(uid, agent_id, input, mode="on", idempotency_key=key, max_attempts=2)
+        return True
+    except Exception as e:
+        print(f"[Inkwell] {agent_id} hand-off failed, running the plain job: {getattr(e, 'message', e)}", flush=True)
+        return False
 
 
 def start_workers():

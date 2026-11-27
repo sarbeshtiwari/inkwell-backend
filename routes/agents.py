@@ -60,8 +60,8 @@ def agent_mode(ws):
     """The user's own rollout switch (product decision D-12, 2026-11-27: each user decides for their account).
     off: agents don't run. shadow (default): agents run but only read, change nothing and contact no one.
     on: agents can act, and every external action still waits for the user's approval."""
-    m = (ws.load("agent_mode", {}) or {}).get("mode")
-    return m if m in AGENT_MODES else "shadow"
+    from infra import runtime
+    return runtime.user_mode(ws.uid)
 
 
 @app.get("/api/agents/mode")

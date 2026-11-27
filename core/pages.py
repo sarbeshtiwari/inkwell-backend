@@ -4,7 +4,7 @@ import base64
 import html
 import re
 
-from flask import jsonify, make_response, request
+from flask import has_request_context, jsonify, make_response, request
 
 from core.config import JURISDICTION, OPERATOR_NAME, PRODUCTION, SITE_URL, WEB
 from core.crypto import seal, unseal
@@ -50,7 +50,11 @@ def can_track_opens():
 
 
 def site_url():
-    return SITE_URL or request.host_url.rstrip("/")
+    """The app's public address: SITE_URL, else the current request's host (empty outside a request, e.g. an agent
+    task: open tracking then simply isn't added)."""
+    if SITE_URL:
+        return SITE_URL
+    return request.host_url.rstrip("/") if has_request_context() else ""
 
 
 def asset_version(match):

@@ -52,6 +52,9 @@ def daily_tick():
             continue  # today's morning sync was already started (another process)
         state["last_auto"] = now.date().isoformat()
         ws.save("apps_sync", state)
+        from features.replies import hand_to_agent
+        if hand_to_agent(ws.uid, "morning", {}, f"morning:{now.date().isoformat()}"):
+            continue  # agents on for this account: the Morning agent runs today's routine
         start_sync(ws.uid, reason="daily")
 
 

@@ -47,7 +47,7 @@ def world(monkeypatch):
         "career_sites": FakeTool(searches, "career_sites", w["board"]),
         "remote_boards": FakeTool(searches, "remote_boards", w["remote"])})
     monkeypatch.setattr(signals, "ats_alive", lambda j: "gone" not in j["id"])
-    monkeypatch.setattr(agent_tools, "_profile", lambda ws, role, years, location="", company="": {
+    monkeypatch.setattr(agent_tools, "_profile", lambda ws, role, years, location="", company="", resume_name="": {
         "role": role, "years": years, "location": location, "company": company, "resume": RESUME,
         "skills": ["Python", "Django", "PostgreSQL", "Docker", "AWS"]})
     monkeypatch.setattr(agents, "_model", lambda config: None)  # no model unless a test sets one
@@ -117,7 +117,8 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
 
     def answer(system, human):
         if "search criteria" in system:
-            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False, "prepare": True, "apply": False}
+            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False, "prepare": True, "apply": False,
+                             "match": False, "company": "", "resume": "", "sources": [], "review": True}
         if "plan a job search" in system:
             return {"searches": [{"source": "career_sites", "role": "Backend Engineer"}], "why": "ATS boards first"}
         return {"fit": 20 if "Initech" in human else 85, "verdict": "Strong match on Django APIs", "red_flags": []}
@@ -125,7 +126,8 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
     tid = start(uid, goal="Find me 3 backend jobs that use Django")
     run_all()
     r = report(uid, tid)
-    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False, "prepare": True, "apply": False}
+    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False, "prepare": True, "apply": False,
+                             "match": False, "company": "", "resume": "", "sources": [], "review": True}
     assert world["searches"][0] == ("career_sites", "Backend Engineer")       # the model's plan was followed
     assert len(world["searches"]) == len(set(world["searches"]))              # no search is ever repeated
     assert r["scout_notes"][0] == "Round 1: ATS boards first"

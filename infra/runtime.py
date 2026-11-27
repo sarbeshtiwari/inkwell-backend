@@ -243,6 +243,16 @@ def start(uid, agent_id, input, *, mode="shadow", parent_id=None, **task_options
                          **task_options)
 
 
+USER_MODES = ("off", "shadow", "on")
+
+
+def user_mode(uid):
+    """The user's own agent switch (off / shadow / on; default shadow). Decision D-12: each user sets their own."""
+    from core.workspace import Workspace
+    m = (Workspace(uid).load("agent_mode", {}) or {}).get("mode")
+    return m if m in USER_MODES else "shadow"
+
+
 def delegate(config, agent_id, input, key):
     """From inside a node: hand `input` to another agent as a child task, and wait for its result.
 

@@ -182,11 +182,10 @@ def test_remote_boards_and_dedup(monkeypatch):
     monkeypatch.setattr(boards, "search_boards", lambda location="": {"x": fake})
     patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: [{**JOB, "text": JD}] if board == "acme" else [])
     patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
-    st = AI.build_chain({}, ["career_sites", "remote_boards"]).invoke(
-        {"profile": {"role": "Full Stack Developer", "years": 3.0, "company": "", "location": "", "resume": RESUME,
-                     "skills": ["React", "Node.js"]}, "use_llm": False})
-    assert [r["id"] for r in st["ranked"]] == [JOB["id"]]  # the same job from a remote board is dropped; the appliable one stays
-    assert st["jds"][JOB["id"]].startswith("About the role")
+    jobs, _ = AI.search_sources(AI.make_tools({}), ["career_sites", "remote_boards"],
+                                {"role": "Full Stack Developer", "company": "", "location": ""})
+    assert [j["id"] for j in jobs] == [JOB["id"]]  # the same job from a remote board is dropped; the appliable one stays
+    assert jobs[0]["text"].startswith("About the role")
 
 
 def test_board_readers_follow_the_contract():

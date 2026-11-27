@@ -21,8 +21,9 @@ JOB = {"type": "object", "required": ["id", "title", "company"], "properties": {
 OBJECT = {"type": "object"}
 
 
-def _profile(ws, role, years, location="", company=""):
-    resume = J().resume_text(ws)
+def _profile(ws, role, years, location="", company="", resume_name=""):
+    from features.ai_jobs.runs import pdf_text
+    resume = pdf_text(ws, resume_name) if resume_name else J().resume_text(ws)
     return {"role": role, "years": years, "location": location, "company": company, "resume": resume,
             "skills": [s for s in J().skill_hits(resume, J().SKILLS) if s not in ("C", "R")]}
 
@@ -69,16 +70,37 @@ def search(ctx, role, company="", location="", sources=("career_sites",)):
     return {"jobs": jobs, "errors": (errors + skipped)[:50]}
 
 
-@tool("jobs.rank", "1", "Score jobs 0–100 against the user's resume with Inkwell's own engine (no model): role fit, "
-      "skills, years asked, similarity, seniority, location, posting age. Returns reasons and gaps per job.",
+@tool("jobs.rank", "2", "Score jobs 0–100 against the user's resume with Inkwell's own engine (no model): role fit, "
+      "skills, years asked, similarity, seniority, location, posting age, nudged by what the user's feedback taught it. "
+      "Returns reasons and gaps per job.",
       {"type": "object", "additionalProperties": False, "required": ["role", "years", "jobs"], "properties": {
           "role": {"type": "string", "maxLength": 120}, "years": {"type": "number", "minimum": 0, "maximum": 60},
           "location": {"type": "string", "maxLength": 120}, "company": {"type": "string", "maxLength": 120},
+          "resume": {"type": "string", "maxLength": 200},
           "jobs": {"type": "array", "items": JOB, "maxItems": 500}}},
       {"type": "array", "items": {"type": "object", "required": ["id", "score", "reasons", "gaps"]}}, READ)
-def rank(ctx, role, years, jobs, location="", company=""):
-    profile = _profile(ctx.workspace(), role, years, location, company)
-    return ranking.rank(profile, [{"location": "", "text": "", **j} for j in jobs])
+def rank(ctx, role, years, jobs, location="", company="", resume=""):
+    ws = ctx.workspace()
+    profile = _profile(ws, role, years, location, company, resume)
+    ranked = ranking.rank(profile, [{"location": "", "text": "", **j} for j in jobs])
+    taste = learning.model(ws)
+    if taste.get("weights"):
+        learning.adjust(ranked, taste, {j["id"]: j.get("text", "") for j in jobs})
+    return ranked
+
+
+@tool("matches.save", "1", "Save a finished job search as the user's AI job match results (what the AI job match page "
+      "shows), record which jobs break their rules, and tell them how many strong matches there are.",
+      {"type": "object", "additionalProperties": False, "required": ["want", "sources", "results"], "properties": {
+          "want": {"type": "object"}, "sources": {"type": "array", "items": SHORT, "maxItems": 4},
+          "results": {"type": "array", "items": {"type": "object"}, "maxItems": 100},
+          "jds": {"type": "object"}, "errors": {"type": "array", "items": SHORT, "maxItems": 50},
+          "engine": SHORT, "considered": {"type": "integer", "minimum": 0}, "error": {"type": "string", "maxLength": 300}}},
+      {"type": "object", "required": ["saved"]}, tools_mod.WRITE_INTERNAL)
+def save_matches(ctx, want, sources, results, jds=None, errors=(), engine="Inkwell AI", considered=0, error=""):
+    from features.ai_jobs.runs import save_match
+    n = save_match(ctx.workspace(), want, sources, results, jds or {}, list(errors), engine, considered, error)
+    return {"saved": n}
 
 
 @tool("jobs.liveness", "1", "Is this posting still open? Checks the company's job board, else the job page.",

@@ -77,6 +77,9 @@ from features.learning.common import bp as learning_bp  # noqa: E402
 from features.research.company import bp as research_bp  # noqa: E402
 from features import agent_communicator as _agent_communicator  # noqa: E402,F401  (registers the Communicator)
 from features import agent_inbox as _agent_inbox  # noqa: E402,F401  (registers the Inbox agent)
+from features import agent_outreach as _agent_outreach  # noqa: E402,F401  (registers the Outreach agent)
+from features import agent_morning as _agent_morning  # noqa: E402,F401  (registers the Morning agent)
+from features import agent_career as _agent_career  # noqa: E402,F401  (registers Job Alerts and Weekly Digest)
 
 bridge.setup(sys.modules[__name__])
 feature_notify.init()
@@ -95,8 +98,7 @@ if os.environ.get("BOUNCE_WATCH", "1") == "1":
     bridge.every(300, feature_briefing.daily_tick, "learning-briefing")  # today's briefing, once a day after 07:00
     from infra import supervisor as _supervisor
     bridge.every(int(_supervisor.EVERY_SECONDS), _supervisor.tick, "agent-supervisor")  # watches every agent
-
-if os.environ.get("AGENT_WORKER_THREADS"):  # local development: run agent tasks in this process (infra/worker.py)
+    # Agent tasks run in this process unless a separate worker takes them (AGENT_WORKER_THREADS=0 here, then).
     from infra import worker as _agent_worker
     _agent_worker.start()
 
