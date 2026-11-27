@@ -376,6 +376,8 @@ def applicant_submit(state, config):
         try:
             res = tools.call(c, "applications.submit", {"job": j})
             outcomes.append({"id": j["id"], **res})
+        except tools.ApprovalExpired as e:
+            outcomes.append({"id": j["id"], "state": "expired", "detail": str(e)})
         except tools.ApprovalRejected:
             outcomes.append({"id": j["id"], "state": "declined", "detail": "You declined this application."})
         except tools.OutcomeUnknown as e:

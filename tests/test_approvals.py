@@ -255,3 +255,40 @@ def test_account_deletion_removes_approvals():
     run_all()
     A.delete_user_data(uid)
     assert A.M.approvals.count_documents({"uid": uid}) == 0
+
+
+def test_a_pending_approval_expires_after_48_hours_and_only_that_action_is_dropped():
+    import datetime as dt
+    assert approvals.APPROVAL_EXPIRY_HOURS == 48
+    uid, _ = make_user()
+    mailer()
+    tid = start(uid)
+    other = start(uid, to="someone-else@acme.example")
+    run_all()
+    first, second = sorted(approvals.list_for(uid, status="pending"), key=lambda a: a["proposed"]["to"])
+    created = A.M.approvals.find_one({"_id": first["id"]})
+    assert created["expires_at"] - created["created_at"] == dt.timedelta(hours=48)
+    A.M.approvals.update_one({"_id": first["id"]}, {"$set": {"expires_at": approvals._now() - dt.timedelta(seconds=1)}})
+    with pytest.raises(A.Invalid, match="expired"):
+        approvals.decide(uid, first["id"], "approve")
+    run_all()
+    expired_task = tid if first["task_id"] == tid else other
+    v = tasks.get(uid, expired_task)
+    assert v["status"] == "done" and v["result"]["outcome"] == "skipped: you declined"  # the run carried on without it
+    assert SENT == [] and approvals.get(uid, first["id"])["status"] == "expired"
+    assert approvals.get(uid, second["id"])["status"] == "pending"                    # nothing else affected
+    approvals.decide(uid, second["id"], "approve")
+    run_all()
+    assert len(SENT) == 1
+
+
+def test_expiry_settles_on_claim_without_anyone_looking():
+    import datetime as dt
+    uid, _ = make_user()
+    mailer()
+    tid = start(uid)
+    run_all()
+    aid = approvals.list_for(uid, status="pending")[0]["id"]
+    A.M.approvals.update_one({"_id": aid}, {"$set": {"expires_at": approvals._now() - dt.timedelta(seconds=1)}})
+    run_all()  # the next claim settles it; the task resumes and finishes
+    assert A.M.approvals.find_one({"_id": aid})["status"] == "expired" and tasks.get(uid, tid)["status"] == "done"

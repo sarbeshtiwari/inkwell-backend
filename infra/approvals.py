@@ -17,12 +17,16 @@ How a call to an `external_action` tool goes (infra/tools.py → gate()):
 5. **A crash between starting the action and recording it** leaves the approval in `executing`; a later call raises
    OutcomeUnknown and never repeats the action automatically — the user has to check and decide.
 
-Approvals have no expiry yet (the period is a pending product decision); a pending approval can always be rejected,
-and cancelling the task withdraws its pending approvals."""
+**Expiry.** A pending approval lapses after APPROVAL_EXPIRY_HOURS (48, product decision 2026-11-27). A lapsed
+approval counts as declined for that one action only: its task resumes and carries on without it, and nothing else
+(other approvals, other tasks, the rest of the run) is affected. expire_due() settles lapsed ones; it runs on every
+task claim, and reading or deciding an approval past its time settles it too. Cancelling a task withdraws its
+pending approvals."""
 
 import datetime as dt
 import hashlib
 import json
+import os
 import uuid
 
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
@@ -33,8 +37,18 @@ from core.db import M, ensure_index
 from core.validation import Invalid
 from infra import audit, telemetry
 
-PENDING, APPROVED, REJECTED, EXECUTING, EXECUTED, FAILED, WITHDRAWN = (
-    "pending", "approved", "rejected", "executing", "executed", "failed", "withdrawn")
+PENDING, APPROVED, REJECTED, EXECUTING, EXECUTED, FAILED, WITHDRAWN, EXPIRED = (
+    "pending", "approved", "rejected", "executing", "executed", "failed", "withdrawn", "expired")
+
+
+def _hours(name, default):
+    try:
+        return max(0.001, float(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+APPROVAL_EXPIRY_HOURS = _hours("APPROVAL_EXPIRY_HOURS", 48.0)
 OPEN = (PENDING,)
 
 
@@ -45,10 +59,26 @@ class ApprovalPending(Exception):
 def ensure_indexes():
     ensure_index(M.approvals, [("uid", ASCENDING), ("task_id", ASCENDING), ("call_key", ASCENDING)], unique=True)
     ensure_index(M.approvals, [("uid", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)])
+    ensure_index(M.approvals, [("status", ASCENDING), ("expires_at", ASCENDING)])
 
 
 def _now():
     return dt.datetime.now(dt.timezone.utc)
+
+
+def expire_due(uid=None):
+    """Settle pending approvals past their time: expired, and their task resumes without that action.
+    Only those approvals change; safe to call from any process at any time. Returns how many expired."""
+    from infra import tasks
+    q = {"status": PENDING, "expires_at": {"$lte": _now()}, **({"uid": uid} if uid else {})}
+    n = 0
+    for doc in M.approvals.find(q, {"uid": 1, "task_id": 1, "tool_id": 1}).limit(500):
+        if M.approvals.update_one({"_id": doc["_id"], "status": PENDING},
+                                  {"$set": {"status": EXPIRED, "decided_at": _now()}}).modified_count:
+            n += 1
+            if not M.approvals.find_one({"uid": doc["uid"], "task_id": doc["task_id"], "status": PENDING}, {"_id": 1}):
+                tasks.resume(doc["uid"], doc["task_id"])  # nothing else to wait for: carry on without it
+    return n
 
 
 def call_key(tool_id, args):
@@ -61,7 +91,8 @@ def view(doc, with_content=True):
         return None
     out = {"id": doc["_id"], "task_id": doc["task_id"], "trace_id": doc.get("trace_id"), "agent_id": doc.get("agent_id"),
            "tool_id": doc["tool_id"], "tool_version": doc.get("tool_version"), "status": doc["status"],
-           "created_at": doc["created_at"], "decided_at": doc.get("decided_at"), "edited": bool(doc.get("edited"))}
+           "created_at": doc["created_at"], "expires_at": doc.get("expires_at"), "decided_at": doc.get("decided_at"),
+           "edited": bool(doc.get("edited"))}
     if with_content:
         out["proposed"] = unseal(doc.get("proposed"), {})
         out["approved_args"] = unseal(doc["final"], None) if doc.get("final") else None
@@ -71,6 +102,7 @@ def view(doc, with_content=True):
 
 
 def list_for(uid, status=None, task_id=None):
+    expire_due(uid)
     q = {"uid": uid}
     if status:
         q["status"] = status
@@ -80,6 +112,7 @@ def list_for(uid, status=None, task_id=None):
 
 
 def get(uid, approval_id):
+    expire_due(uid)
     return view(M.approvals.find_one({"_id": str(approval_id), "uid": uid}))
 
 
@@ -105,6 +138,8 @@ def gate(ctx, tool, args, run):
     status = doc["status"]
     if status == PENDING:
         _pause(doc)
+    if status == EXPIRED:
+        raise tools.ApprovalExpired(f"No answer within {APPROVAL_EXPIRY_HOURS:g} hours, so {tool.id} wasn't done.")
     if status in (REJECTED, WITHDRAWN):
         raise tools.ApprovalRejected(f"You declined {tool.id}, so it wasn't done.")
     if status == EXECUTED:
@@ -140,7 +175,8 @@ def gate(ctx, tool, args, run):
 def _create(ctx, tool, args, key):
     doc = {"_id": uuid.uuid4().hex, "uid": ctx.uid, "task_id": ctx.task_id, "trace_id": ctx.trace_id,
            "agent_id": ctx.agent_id, "agent_version": ctx.agent_version, "tool_id": tool.id, "tool_version": tool.version,
-           "call_key": key, "proposed": seal(args), "status": PENDING, "created_at": _now()}
+           "call_key": key, "proposed": seal(args), "status": PENDING, "created_at": _now(),
+           "expires_at": _now() + dt.timedelta(hours=APPROVAL_EXPIRY_HOURS)}
     try:
         M.approvals.insert_one(doc)
     except DuplicateKeyError:
@@ -168,9 +204,13 @@ def decide(uid, approval_id, decision, args=None):
     """The owner approves (optionally with edited arguments) or rejects a pending approval. Audited first; the task
     resumes afterwards. Returns the updated approval."""
     from infra import tasks, tools
+    expire_due(uid)
     doc = M.approvals.find_one({"_id": str(approval_id), "uid": uid})
     if not doc:
         raise Invalid("That approval doesn't exist.", status=404)
+    if doc["status"] == EXPIRED:
+        raise Invalid("That request expired after "
+                      f"{APPROVAL_EXPIRY_HOURS:g} hours without an answer, so it wasn't done.", status=409)
     if doc["status"] != PENDING:
         raise Invalid("That has already been decided.", status=409)
     if decision not in ("approve", "reject"):

@@ -8,7 +8,7 @@ from core.validation import Invalid
 from infra import approvals
 
 STATUSES = (approvals.PENDING, approvals.APPROVED, approvals.REJECTED, approvals.EXECUTING, approvals.EXECUTED,
-            approvals.FAILED, approvals.WITHDRAWN)
+            approvals.FAILED, approvals.WITHDRAWN, approvals.EXPIRED)
 
 
 @app.get("/api/agents/approvals")

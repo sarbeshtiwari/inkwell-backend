@@ -331,6 +331,8 @@ def claim(worker=None, kinds=None, lease=None):
     from infra import controls
     lease = lease or LEASE_SECONDS
     recover()
+    from infra import approvals
+    approvals.expire_due()  # lapsed approvals let their tasks carry on without that action
     switches = controls.active()
     if switches["global"]:
         return None  # everything is stopped: start nothing

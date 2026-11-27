@@ -63,6 +63,10 @@ class ApprovalRejected(ToolDenied):
     error_class = "approval_rejected"
 
 
+class ApprovalExpired(ApprovalRejected):
+    error_class = "approval_expired"
+
+
 class OutcomeUnknown(ToolError):
     error_class = "outcome_unknown"
     permanent = True  # never repeated automatically
