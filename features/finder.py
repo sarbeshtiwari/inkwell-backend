@@ -294,7 +294,7 @@ def start_scan(ws):
     tid = runtime.start(ws.uid, "email_finder", {"items": items, "save": False}, mode="on")
     with ws.lock:
         ws.save("finder", {"state": "running", "total": len(items), "done": 0, "started": time.time(), "results": [],
-                           "task_id": tid})
+                           "task_id": tid, "queue": [i.get("company") or i["website"] for i in items][:MAX_SITES]})
     return jsonify(ok=True, total=len(items), skipped=bad)
 
 
