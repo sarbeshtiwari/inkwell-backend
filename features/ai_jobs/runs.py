@@ -128,7 +128,7 @@ def start(ws):
         raise core.Invalid("Pick a resume from your files.", "resume")
     if not want["resume"] and not any(d["name"].lower().endswith(".pdf") for d in ws.documents()):
         raise core.Invalid("Upload your resume as a PDF on the Files page first.", "resume")
-    sources = [s for s in (p.get("sources") or ["career_sites"]) if s in ("career_sites", "remote_boards")] or ["career_sites"]
+    sources = ["career_sites", "remote_boards"]  # every search uses all sources; the user doesn't choose
     cur = match_state(ws)
     if cur.get("state") == "running":
         raise core.Invalid("A search is already running.", status=409)
