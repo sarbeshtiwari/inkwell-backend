@@ -38,7 +38,11 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
         if not t["id"].startswith("test."):
             assert t["input_schema"]["additionalProperties"] is False
             # the only tool that acts outside Inkwell is application submission, and it is approval-gated
-            assert t["risk"] == ("external_action" if t["id"] == "applications.submit" else "read")
+            # the only tool that acts outside Inkwell is application submission (approval-gated); the Supervisor's
+            # control tools change only Inkwell's own agent state
+            expected = "external_action" if t["id"] == "applications.submit" else \
+                "write_internal" if t["id"] in ("supervision.pause_agent", "supervision.cancel_task", "supervision.alert") else "read"
+            assert t["risk"] == expected
     assert [t["id"] for t in tools.describe({"rules.read"})] == ["rules.read"]
 
 

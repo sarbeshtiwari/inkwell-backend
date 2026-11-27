@@ -91,6 +91,8 @@ if os.environ.get("BOUNCE_WATCH", "1") == "1":
     feature_replies.start_workers()
     bridge.every(3600, feature_ai_jobs.weekly_digest_all, "ai-weekly-digest")  # sends on Mondays, once a week
     bridge.every(300, feature_briefing.daily_tick, "learning-briefing")  # today's briefing, once a day after 07:00
+    from infra import supervisor as _supervisor
+    bridge.every(int(_supervisor.EVERY_SECONDS), _supervisor.tick, "agent-supervisor")  # watches every agent
 
 if os.environ.get("AGENT_WORKER_THREADS"):  # local development: run agent tasks in this process (infra/worker.py)
     from infra import worker as _agent_worker

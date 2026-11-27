@@ -195,3 +195,35 @@ def admin_model_set(ws):
     from infra import model_config
     p = body()
     return jsonify(config=model_config.set_model(ws.uid, p.get("provider") or None, p.get("model"), p.get("reason")))
+
+
+# ---- Supervisor (the agent that watches the agents) -------------------------------------------------------------
+
+@app.get("/api/admin/supervisor")
+@login_required
+@rbac.require_permission("admin.read_metadata", message="Only a Super Admin can see the Supervisor.")
+def admin_supervisor(ws):
+    """The Supervisor's mode and its latest reports (metadata only)."""
+    from flask import request
+
+    from infra import supervisor
+    return jsonify(mode=supervisor.mode(), reports=supervisor.reports(request.args.get("limit", 20)))
+
+
+@app.put("/api/admin/supervisor")
+@login_required
+def admin_supervisor_mode(ws):
+    """Super Admin: {mode: observe | act, reason}. observe reports only; act lets it pause failing agents and cancel
+    stuck tasks (only you can undo those). Audited first."""
+    from infra import supervisor
+    p = body()
+    return jsonify(mode=supervisor.set_mode(ws.uid, p.get("mode"), p.get("reason")))
+
+
+@app.post("/api/admin/supervisor/run")
+@login_required
+@rbac.require_permission("admin.control_agents", message="Only a Super Admin can run the Supervisor.", audit_success=True)
+def admin_supervisor_run(ws):
+    """Super Admin: run a check now (in this request) and return its report."""
+    from infra import supervisor
+    return jsonify(report=supervisor.run_now())

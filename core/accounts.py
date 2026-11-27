@@ -77,6 +77,8 @@ def init_storage():
     M.contact_shares.create_index("expire_at", expireAfterSeconds=0)  # unanswered shares lapse on their own
     from infra import audit, gateway, locks, operations, rbac, runtime, schedule, tasks, telemetry
     runtime.ensure_indexes()
+    from infra import supervisor
+    supervisor.ensure_indexes()
     from infra import approvals
     approvals.ensure_indexes()
     telemetry.ensure_indexes()
