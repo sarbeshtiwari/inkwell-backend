@@ -59,6 +59,20 @@ def test_contact_import_csv(user):
     assert r.status_code == 200 and r.get_json()["added"] == 1 and r.get_json()["duplicates"] == 1
 
 
+def test_export_only_the_chosen_contacts(user):
+    import io
+    from openpyxl import load_workbook
+    c = user["client"]
+    ids = [c.post("/api/recipients", json={"name": n, "email": f"{n.lower()}@corp.example"}, headers=H).get_json()["id"]
+           for n in ("Asha", "Ben", "Cara")]
+    r = c.post("/api/recipients/export", json={"ids": [ids[2], ids[0], "gone"]}, headers=H)
+    assert r.status_code == 200
+    names = [row[0] for row in load_workbook(io.BytesIO(r.data)).active.iter_rows(min_row=2, values_only=True)]
+    assert names == ["Cara", "Asha"]
+    assert c.post("/api/recipients/export", json={"ids": []}, headers=H).status_code == 400
+    assert len(list(load_workbook(io.BytesIO(c.get("/api/recipients/export").data)).active.iter_rows(min_row=2))) == 3
+
+
 def test_website_publish_contact_and_leads(user, anon):
     c = user["client"]
     slug = "w-" + user["uid"][:6]

@@ -72,6 +72,9 @@ def init_storage():
     M.sessions.create_index("uid")
     M.ratelimits.create_index("expire_at", expireAfterSeconds=0)
     M.queue.create_index("uid")
+    M.contact_shares.create_index([("to_uid", ASCENDING), ("created", DESCENDING)])
+    M.contact_shares.create_index([("from_uid", ASCENDING), ("created", DESCENDING)])
+    M.contact_shares.create_index("expire_at", expireAfterSeconds=0)  # unanswered shares lapse on their own
     from infra import audit, gateway, locks, operations, rbac, runtime, schedule, tasks, telemetry
     runtime.ensure_indexes()
     from infra import approvals
@@ -207,6 +210,7 @@ def delete_user_data(uid):
     M.wa_sessions.delete_one({"_id": uid})
     M.site.delete_many({"_id": {"$regex": "^portfolio-slug:"}, "uid": uid})
     M.sessions.delete_many({"uid": uid})
+    M.contact_shares.delete_many({"$or": [{"from_uid": uid}, {"to_uid": uid}]})
     M.users.delete_one({"_id": uid})
 
 

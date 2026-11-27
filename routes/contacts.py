@@ -255,9 +255,16 @@ def import_recipients(ws):
 
 
 @app.get("/api/recipients/export")
+@app.post("/api/recipients/export")
 @login_required
 def export_recipients(ws):
     rows = ws.load("recipients", [])
+    if request.method == "POST":  # just these contacts (what the Contacts page is showing), in its order
+        ids = body().get("ids")
+        if not isinstance(ids, list) or not ids:
+            raise Invalid("Choose contacts to export.")
+        by_id = {r["id"]: r for r in rows}
+        rows = [by_id[i] for i in dict.fromkeys(map(str, ids)) if i in by_id]
     extra = sorted({k for r in rows for k in r} - set(CORE_FIELDS) - set(STATUS_FIELDS) - set(CRM_FIELDS) - {"id"})
     headers = CORE_FIELDS + extra + CRM_FIELDS + STATUS_FIELDS
     return xlsx_response(headers, [[r.get(h, "") for h in headers] for r in rows], "contacts.xlsx")

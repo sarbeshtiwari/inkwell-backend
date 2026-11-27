@@ -40,6 +40,7 @@ from core.whatsapp_store import wa_expiry_tick
 from routes import auth, contacts, site_pages, workspace_api, send, whatsapp, leads
 from routes import operations as _operations_routes  # noqa: F401  (registers the /api/operations routes)
 from routes import agents as _agents_routes  # noqa: F401,E402  (registers the /api/agents routes)
+from routes import shares as _shares_routes  # noqa: F401  (registers the /api/shares routes)
 
 _MODULES = (config, crypto, http, db, storage, validation, workspace, accounts, security, mail, tables, whatsapp_store,
             bounces, sentmail, sending, pages, migrations, auth, contacts, site_pages, workspace_api, send, whatsapp, leads)
