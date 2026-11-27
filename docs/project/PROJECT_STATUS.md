@@ -78,14 +78,14 @@ documentation. · **Last reviewed:** 2026-11-26
 | D-02 | Path out of the Stage 0.5 blocker: an accepted termination-evidence source from Render, a different stop mechanism (with its own design), or staying on `8b59986` | Product owner | DEP-05, DEP-07 |
 | D-03 | Ship `a83d17e` alone, or together with Phase 1 code in one fenced migration | Product owner | Release planning |
 | D-04 | How to get the local commits and documents off the Mac (bundle, or a non-deploying branch) | Product owner | OPS-01 |
-| D-05 | Initial model providers and models, prices, default budgets | Product owner | PH1-01, PH1-02 |
+| D-05 | **Decided 2026-11-27:** Super Admin sets the agents' model and budgets service-wide | — | — |
 | D-06 | BYOK timing (approved as "later") | Product owner | — |
 | D-07 | Move existing auto-apply from standing consent to per-action approval? | Product owner | — |
 | D-08 | Retention periods for traces, usage, approvals, memory, checkpoints | Product owner | PH1-03, PH4-01 |
-| D-09 | Evaluation datasets and promotion thresholds | Product owner | PH2-07, PH4-02 |
+| D-09 | **Answered 2026-11-27: "agent is priority"** (agent workflow is the main path; comparison with the existing pipeline informational). **Needs confirmation:** it conflicts with approved requirement 8 (no configuration production-active without evaluation and explicit approval) | Product owner | PH2-07, PH4-02 |
 | D-10 | Keep or remove `roles` rows on account deletion | Product owner | — |
 | D-11 | When to add the separate worker service | Product owner | Hosting agents |
-| D-12 | Storage of shadow-mode flags and shadow records | Engineering proposal, then owner | PH1-14 |
+| D-12 | **Decided 2026-11-27:** each user switches their own account off / shadow / on | — | — |
 | D-13 | Shared (non-user) knowledge for agents, e.g. company facts | Product owner | PH4-01 |
 | D-14 | Render plan (Free vs Starter) and Atlas tier, which have cost implications | Product owner | DEP-01, PH4-01 |
 
