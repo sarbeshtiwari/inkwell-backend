@@ -74,6 +74,15 @@ def record(ws, job, signal, reason="", note="", jd=""):
         return row
 
 
+def jd_text(v):
+    """A saved job description as text, whatever shape an older release stored it in (text, or {"text": ...})."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return str(v.get("text") or v.get("description") or v.get("jd") or "")
+    return ""
+
+
 def history(ws, book, pipe):
     """Jobs whose status you set before feedback existed (applied, interview, rejected…), as lessons too."""
     known = {r["id"]: r for r in (ws.load("ai_match", {}) or {}).get("results", [])}
@@ -90,7 +99,7 @@ def history(ws, book, pipe):
         if not job or not job.get("title"):
             continue
         out[jid] = {"id": jid, "title": job["title"], "company": job.get("company", ""), "score": job.get("score"),
-                    "features": features(job, jds.get(jid, "")), "signals": {}, "updated": _ts(p.get("at")) or time.time()}
+                    "features": features(job, jd_text(jds.get(jid))), "signals": {}, "updated": _ts(p.get("at")) or time.time()}
     return out
 
 

@@ -30,6 +30,7 @@ def cosine(a, b, idf):
 def years_asked(text):
     """Smallest 'N+ years' / 'N-M years' the description asks for, or None."""
     found = []
+    text = text if isinstance(text, str) else ""  # never fail a whole page on one oddly stored description
     for lo, hi in re.findall(r"(\d{1,2})\s*(?:\+|plus)?\s*(?:-|–|to)?\s*(\d{1,2})?\s*\+?\s*(?:years?|yrs?)", text.lower()):
         lo = int(lo)
         if lo <= 20:
