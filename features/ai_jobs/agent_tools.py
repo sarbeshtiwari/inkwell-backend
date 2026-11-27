@@ -22,8 +22,14 @@ OBJECT = {"type": "object"}
 
 
 def _profile(ws, role, years, location="", company="", resume_name=""):
-    from features.ai_jobs.runs import pdf_text
+    import re
+
+    from core.validation import Invalid
+    from features.ai_jobs.runs import MIN_RESUME_WORDS, pdf_text
     resume = pdf_text(ws, resume_name) if resume_name else J().resume_text(ws)
+    if len(re.findall(r"[A-Za-z]{2,}", resume or "")) < MIN_RESUME_WORDS:
+        raise Invalid("Inkwell couldn't find any text in that resume. It looks like a scanned or image-only PDF: "
+                      "export it again as a text PDF (from Word, Google Docs or LaTeX) and pick it here.", "resume")
     return {"role": role, "years": years, "location": location, "company": company, "resume": resume,
             "skills": [s for s in J().skill_hits(resume, J().SKILLS) if s not in ("C", "R")]}
 

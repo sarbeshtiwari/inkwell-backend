@@ -141,3 +141,17 @@ def test_each_user_switches_their_own_account_off_shadow_or_on():
     assert oc.post("/api/agents/tasks", json={"agent_id": "judge", "mode": "on", "input": {}}, headers=H).status_code == 403
     ev = [e["details"] for e in A.M.audit_log.find({"action": "agent_mode.set", "actor": uid}).sort("seq", 1)]
     assert ev == [{"from": "shadow", "to": "off"}, {"from": "off", "to": "on"}]
+
+
+def test_agent_detail_shows_current_work_runs_and_numbers_for_the_owner_only():
+    uid, _ = make_user()
+    other, _ = make_user()
+    c = client_for(uid)
+    tid = c.post("/api/agents/tasks", json={"agent_id": "judge", "input": {"goal": "g"}}, headers=H).get_json()["task"]["id"]
+    d = c.get("/api/agents/judge").get_json()
+    assert d["current"]["id"] == tid and d["agent"]["version"] == "1" and d["mode"] == "shadow"
+    run_all()
+    d = c.get("/api/agents/judge").get_json()
+    assert d["current"] is None and d["runs"][0]["status"] == "done" and d["stats"]["done"] == 1 and d["usage"]["calls"] == 1
+    assert client_for(other).get("/api/agents/judge").get_json()["runs"] == []
+    assert c.get("/api/agents/nope").status_code == 404 and c.get("/api/agents/supervisor").status_code == 404

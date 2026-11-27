@@ -21,6 +21,11 @@ def save_match(ws, want, sources, results, jds, errors, engine, considered, erro
     prev = ws.load("ai_match", {}) or {}
     run = {"want": want, "sources": sources, "started": prev.get("started") or time.time(), "finished": time.time(),
            "task_id": prev.get("task_id"), "skills": prev.get("skills", [])}
+    try:
+        resume = J().resume_text(ws) if not want.get("resume") else pdf_text(ws, want["resume"])
+        run["skills"] = [x for x in J().skill_hits(resume, J().SKILLS) if x not in ("C", "R")]
+    except Exception:
+        pass
     if error:
         run.update(state="error", stage="Error", error=error, results=prev.get("results", []) if prev.get("state") == "done" else [])
     else:
@@ -157,13 +162,9 @@ def start(ws):
     if runtime.user_mode(ws.uid) == "off":
         raise core.Invalid("Agents are switched off for your account, and the AI job match runs on agents. "
                            "Turn them on in Approvals.", status=403)
-    resume = J().resume_text(ws) if not want["resume"] else pdf_text(ws, want["resume"])  # unreadable: 400 now
-    if len(re.findall(r"[A-Za-z]{2,}", resume or "")) < MIN_RESUME_WORDS:
-        raise core.Invalid("Inkwell couldn't find any text in that resume. It looks like a scanned or image-only PDF: "
-                           "export it again as a text PDF (from Word, Google Docs or LaTeX) and pick it here.", "resume")
     if core.rate_limited(("ai-match", ws.uid), 30, 86400):
         raise core.Invalid("You've run 30 searches today. Try again tomorrow.", status=429)
-    skills = [x for x in J().skill_hits(resume, J().SKILLS) if x not in ("C", "R")]
+    # The resume is read by the agents (not here): reading a PDF from file storage can outlast the proxy's time limit.
     # The user asked for this search on this page, so its results are saved whatever the switch (Shadow or On);
     # the run only searches, ranks and saves: nothing is applied to or sent from here.
     tid = runtime.start(ws.uid, "orchestrator", {"criteria": {**want, "count": MAX_RESULTS, "sources": sources, "match": True,
@@ -171,7 +172,7 @@ def start(ws):
                                                               "research": False, "apply": False}}, mode="on")
     with ws.lock:
         ws.save("ai_match", {**(ws.load("ai_match", {}) or {}), "state": "running", "stage": "Reading your resume",
-                             "want": want, "sources": sources, "started": time.time(), "task_id": tid, "skills": skills})
+                             "want": want, "sources": sources, "started": time.time(), "task_id": tid, "skills": []})
     return jsonify(ok=True)
 
 

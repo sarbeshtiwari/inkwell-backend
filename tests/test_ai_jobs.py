@@ -283,17 +283,21 @@ def test_cover_letter_choice(user):
 
 
 def test_unreadable_resume_shows_the_real_reason_not_a_generic_error(user, monkeypatch):
+    """The start request answers at once (no PDF reading); the agents find the resume unreadable and the page shows why."""
+    from features.ai_jobs import agent_tools, signals
     c = user["client"]
     user["ws"].save_doc("scan.pdf", b"%PDF-1.4 x")
+    patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: JOBS)
+    patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
+    monkeypatch.setattr(signals, "ats_alive", lambda job: True)
     patch_shared(monkeypatch, "pdf_text", src=AI, value=lambda ws, name: "")   # an image-only PDF: no text layer
-    r = c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H)
-    assert r.status_code == 400 and "scanned or image-only" in r.get_json()["error"]
-
-    def broken(ws, name):
-        raise A.Invalid("We couldn't read that PDF. Upload a text-based resume (not a scanned image).", "resume")
-    patch_shared(monkeypatch, "pdf_text", src=AI, value=broken)
-    r = c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H)
-    assert r.status_code == 400 and r.get_json()["error"].startswith("We couldn't read that PDF")
+    monkeypatch.setattr(agent_tools, "J", lambda: AI.J())
+    import features.ai_jobs.runs as runs_mod
+    monkeypatch.setattr(runs_mod, "pdf_text", lambda ws, name: "")
+    assert c.post("/api/ai-jobs/match", json={"role": "Full Stack Developer", "years": 2, "resume": "scan.pdf"}, headers=H).status_code == 200
+    _run_agents()
+    st = c.get("/api/ai-jobs").get_json()
+    assert st["state"] == "error" and "scanned or image-only" in st["error"]
 
 
 def test_status_survives_a_job_description_stored_as_a_dict(user):
