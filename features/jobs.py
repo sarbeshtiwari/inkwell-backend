@@ -487,6 +487,9 @@ def auto_scan_all():
             continue
         if not schedule.claim("job-alert-scan", 3300, ws.uid):
             continue  # another process just took this account's scan
+        from features.replies import hand_to_agent
+        if hand_to_agent(ws.uid, "job_alerts", {}, f"job-alerts:{int(time.time() // 3300)}"):
+            continue  # agents on for this account: the Job Alerts agent reads and decides
         try:
             r = bridge.with_deadline(300, scan_alerts, ws, days=3, limit=150)
             if r["added"] and getattr(bridge, "notify", None):
