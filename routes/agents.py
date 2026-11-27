@@ -176,3 +176,42 @@ def cancel_agent_task(ws, tid):
     from infra import tasks
     _own_task(ws, tid)
     return jsonify(task=tasks.cancel(ws.uid, tid))
+
+
+@app.get("/api/agents/<agent_id>")
+@login_required
+def agent_detail(ws, agent_id):
+    """One agent for the signed-in user: what it is, what it is doing now, its recent runs and its numbers."""
+    import datetime as dt
+
+    from core.db import M
+    from infra import runtime, tasks
+    a = runtime.AGENTS.get(agent_id)
+    if not a or agent_id in SYSTEM_AGENTS:
+        raise Invalid("Unknown agent.", status=404)
+    rows = list(M.tasks.find({"uid": ws.uid, "agent_id": agent_id}).sort("created_at", -1).limit(30))
+    now = [tasks.view_of(d, with_content=False) for d in rows if d["status"] not in tasks.FINAL]
+    current = None
+    if now:
+        t = now[0]
+        last_span = M.spans.find_one({"trace_id": t["trace_id"], "uid": ws.uid, "type": {"$ne": "model_call"}},
+                                     {"name": 1, "type": 1, "start": 1}, sort=[("start", -1)])
+        kids = tasks.children(ws.uid, t["id"])
+        current = {**t, "doing": (last_span or {}).get("name"), "doing_type": (last_span or {}).get("type"),
+                   "children": [{k: c.get(k) for k in ("id", "agent_id", "status")} for c in kids]}
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    stats = {s["_id"]: s["n"] for s in M.tasks.aggregate([
+        {"$match": {"uid": ws.uid, "agent_id": agent_id, "created_at": {"$gte": since}}},
+        {"$group": {"_id": "$status", "n": {"$sum": 1}}}])}
+    usage = list(M.model_usage.aggregate([
+        {"$match": {"uid": ws.uid, "agent_id": agent_id, "at": {"$gte": since.timestamp()}}},
+        {"$group": {"_id": None, "calls": {"$sum": 1}, "tokens": {"$sum": {"$add": [
+            {"$ifNull": ["$input_tokens", 0]}, {"$ifNull": ["$output_tokens", 0]}]}}, "cost": {"$sum": {"$ifNull": ["$cost", 0]}}}}]))
+    from infra import controls
+    return jsonify(agent={"id": a.id, "version": a.version, "description": a.description, "tools": sorted(a.grants),
+                          "max_steps": a.max_steps, "paused": agent_id in controls.active()["agents"]},
+                   mode=agent_mode(ws), current=current,
+                   runs=[tasks.view_of(d, with_content=False) for d in rows],
+                   stats={"runs_30d": sum(stats.values()), **stats},
+                   usage={k: v for k, v in (usage[0] if usage else {"calls": 0, "tokens": 0, "cost": 0}).items() if k != "_id"},
+                   pending_approvals=M.approvals.count_documents({"uid": ws.uid, "agent_id": agent_id, "status": "pending"}))
