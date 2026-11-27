@@ -10,8 +10,9 @@ makes that choice, from those options only; without one the reply's detected int
   mailbox (same thread, same daily limit as the Send button), marks set-aside replies handled, and remembers declined
   drafts so it doesn't ask again.
 
-Reading the mailbox itself is still done by the reply watcher (features/replies.py); this agent works on what it found.
-Moving that loop under agent control is a later step."""
+For accounts whose agent switch is On, the background reply check hands the work to this agent (input check=true):
+it reads the mailbox itself (replies.check) and then handles what it found. Other accounts keep the plain reply
+watcher (features/replies.py)."""
 
 import operator
 from typing import Annotated, TypedDict
@@ -55,6 +56,15 @@ def open_replies(ctx, limit=MAX_REPLIES):
                     "intents": info.get("intents") or [], "questions": (info.get("questions") or [])[:5],
                     "asks": (info.get("asks") or [])[:5], "text": (r.get("text") or "")[:2000]})
     return out
+
+
+@tool("replies.check", "1", "Read new mail in the user's mailbox for replies to emails they sent (read-only; nothing "
+      "is marked read) and record them.",
+      {"type": "object", "additionalProperties": False, "properties": {}},
+      {"type": "object", "required": ["found"]}, WRITE_INTERNAL, timeout=300)
+def check(ctx):
+    out = R.scan(ctx.workspace())
+    return {"found": int(out.get("found", 0)), **({"skipped": out["skipped"]} if out.get("skipped") else {})}
 
 
 @tool("replies.draft", "1", "Draft the answer to one reply from the user's own saved details and resume links "
@@ -101,6 +111,7 @@ def set_state(ctx, id, state, reason=""):
 # ---- the agent --------------------------------------------------------------------------------------------------
 
 class State(TypedDict, total=False):
+    check: bool           # read the mailbox first (the background reply check hands this to the agent)
     replies: list
     plan: list            # [{"id", "do": answer|set_aside|leave, "why"}]
     drafts: dict
@@ -110,6 +121,13 @@ class State(TypedDict, total=False):
 
 def look(state, config):
     runtime.checkpoint(config)
+    c = runtime.ctx(config)
+    if state.get("check") and c.mode == "on":
+        try:
+            tools.call(c, "replies.check", {})
+        except Exception as e:  # mailbox not set up or unreachable: work on what is already recorded
+            return {"replies": tools.call(c, "replies.open", {"limit": MAX_REPLIES}),
+                    "notes": [f"Mailbox not checked: {str(e)[:200]}"]}
     return {"replies": tools.call(runtime.ctx(config), "replies.open", {"limit": MAX_REPLIES})}
 
 
@@ -207,8 +225,8 @@ def build():
 
 def register():
     runtime.register_agent(runtime.Agent(
-        "communicator", "1", "communicator-1",
-        frozenset({"replies.open", "replies.draft", "replies.send", "replies.set_state"}), build, max_steps=8,
+        "communicator", "2", "communicator-2",
+        frozenset({"replies.check", "replies.open", "replies.draft", "replies.send", "replies.set_state"}), build, max_steps=8,
         description="Handles replies to your emails: drafts answers for your approval, sets aside the ones that need none.",
         instructions="at most 5 replies; answer only with drafts from saved details; every send approved; nothing in shadow"))
 

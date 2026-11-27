@@ -42,7 +42,8 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
             # control tools change only Inkwell's own agent state
             expected = "external_action" if t["id"] in ("applications.submit", "replies.send", "outreach.send_campaign") else \
                 "write_internal" if t["id"] in ("supervision.pause_agent", "supervision.cancel_task", "supervision.alert",
-                                                "replies.set_state", "inbox.sync", "inbox.summarise") else "read"
+                                                "replies.set_state", "inbox.sync", "inbox.summarise",
+                                                "replies.check", "mail.sync") else "read"
             assert t["risk"] == expected
     assert [t["id"] for t in tools.describe({"rules.read"})] == ["rules.read"]
 
