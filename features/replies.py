@@ -758,7 +758,13 @@ def save_details(ws):
 @login_required
 def send_reply(ws, key):
     """Send your answer from your own mailbox, in the same thread (In-Reply-To / References)."""
-    core, p = C(), C().body()
+    return jsonify(ok=True, at=send_answer(ws, key, C().body()))
+
+
+def send_answer(ws, key, p):
+    """Send one answer to a reply (the route above, and the Communicator agent after the user approves it).
+    Every check and limit of the Send button applies. Returns the time it was sent."""
+    core = C()
     row, rec = reply_row(ws, key)
     profile = ws.profile()
     if not profile.get("smtp_password"):
@@ -832,4 +838,4 @@ def send_reply(ws, key):
             ws.save(f"contact:{rid}", events[:500])
     core.check_bounces_soon(ws.uid)
     SENT_CACHE.pop(ws.uid, None)
-    return jsonify(ok=True, at=now)
+    return now

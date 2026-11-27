@@ -75,6 +75,7 @@ from features import nearby as feature_nearby  # noqa: E402
 from features.learning import course as _learning_course, briefing as feature_briefing  # noqa: E402,F401
 from features.learning.common import bp as learning_bp  # noqa: E402
 from features.research.company import bp as research_bp  # noqa: E402
+from features import agent_communicator as _agent_communicator  # noqa: E402,F401  (registers the Communicator)
 
 bridge.setup(sys.modules[__name__])
 feature_notify.init()
