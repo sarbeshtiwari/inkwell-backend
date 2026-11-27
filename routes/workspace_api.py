@@ -171,6 +171,9 @@ def view_document(ws, name):
 @login_required
 def delete_document(ws, name):
     ws.delete_doc(name)
+    picked = ws.settings().get("documents")
+    if picked and name in picked:  # forget it as a remembered attachment, or the next send is refused
+        ws.update_settings(documents=[n for n in picked if n != name])
     return jsonify(ok=True)
 
 
