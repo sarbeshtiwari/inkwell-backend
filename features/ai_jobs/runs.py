@@ -24,6 +24,10 @@ def run_match(op, uid, want, sources, use_llm):
     try:
         op.checkpoint()
         resume = J().resume_text(ws) if not want.get("resume") else pdf_text(ws, want["resume"])
+        if len(re.findall(r"[A-Za-z]{2,}", resume or "")) < MIN_RESUME_WORDS:
+            raise C().Invalid("Inkwell couldn't find any text in that resume. It looks like a scanned or image-only "
+                              "PDF: export it again as a text PDF (from Word, Google Docs or LaTeX) and pick it here.",
+                              "resume")
         profile = {**want, "resume": resume, "skills": [s for s in J().skill_hits(resume, J().SKILLS) if s not in ("C", "R")]}
         run["skills"] = profile["skills"]
         run["stage"] = "Searching"
@@ -44,6 +48,9 @@ def run_match(op, uid, want, sources, use_llm):
                    considered=state.get("considered", 0))
     except (operations.Cancelled, locks.LeaseLost):
         raise
+    except C().Invalid as e:  # a reason the user can act on (unreadable or missing resume): show it as it is
+        print(f"[Inkwell] AI match stopped: {e.message}", flush=True)
+        run.update(state="error", stage="Error", error=e.message)
     except Exception as e:
         print(f"[Inkwell] AI match failed: {error_text(e, 200)}", flush=True)
         run.update(state="error", stage="Error", error="Something went wrong while matching. Please try again.")
@@ -71,6 +78,9 @@ def mark_rules(ws, results, jds):
             r.setdefault("rules", [])
         if r["rules"]:
             set_status(ws, r["id"], "skip", only_if_new=True, note=r["rules"][0]["rule"])
+
+
+MIN_RESUME_WORDS = 10  # fewer readable words than this: the PDF has no usable text layer (scan or image)
 
 
 def pdf_text(ws, name):

@@ -262,3 +262,28 @@ def test_cover_letter_choice(user):
     r = anon.post("/api/ext/autofill", json={"url": "https://x.example"}, headers={**H, "Authorization": "Bearer " + key}).get_json()
     assert r["cover"]["name"] == "My Cover Letter.txt"
     assert anon.get("/api/ext/cover", headers={**H, "Authorization": "Bearer " + key}).data.startswith(b"Dear Hiring Team")
+
+
+def _wait_match(c):
+    for _ in range(200):
+        st = c.get("/api/ai-jobs").get_json()
+        if st["state"] != "running":
+            return st
+        time.sleep(0.05)
+    return st
+
+
+def test_unreadable_resume_shows_the_real_reason_not_a_generic_error(user, monkeypatch):
+    c = user["client"]
+    user["ws"].save_doc("scan.pdf", b"%PDF-1.4 x")
+    patch_shared(monkeypatch, "pdf_text", src=AI, value=lambda ws, name: "")   # an image-only PDF: no text layer
+    assert c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H).status_code == 200
+    st = _wait_match(c)
+    assert st["state"] == "error" and "scanned or image-only" in st["error"]
+
+    def broken(ws, name):
+        raise A.Invalid("We couldn't read that PDF. Upload a text-based resume (not a scanned image).", "resume")
+    patch_shared(monkeypatch, "pdf_text", src=AI, value=broken)
+    c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H)
+    st = _wait_match(c)
+    assert st["state"] == "error" and st["error"].startswith("We couldn't read that PDF")
