@@ -3,6 +3,7 @@
     Orchestrator ──delegates──► Job Scout   (find live openings)
                  ──delegates──► Job Analyst (decide fit, explain, flag rule breaks)
                  ──delegates──► Researcher  (only when asked: validated facts about the picks' employers)
+                 ──delegates──► Writer      (drafts for the top picks: tailored resume, cover letter; nothing saved)
                  ──► report
 
 Each agent decides what to do next from what it has seen; none is a fixed pipeline:
@@ -293,6 +294,45 @@ def build_researcher():
     return g
 
 
+# ---- Writer -------------------------------------------------------------------------------------------------------
+
+class WriterState(TypedDict, total=False):
+    role: str
+    years: float
+    jobs: list           # jobs to prepare (with their posting text)
+    drafts: Annotated[list, operator.add]
+    notes: Annotated[list, operator.add]
+
+
+MAX_PREPARE = 3
+
+
+def writer_draft(state, config):
+    """Drafts for each job, nothing saved. A resume change tailor_rules rejected is reported, not hidden."""
+    c, drafts = runtime.ctx(config), []
+    for j in state.get("jobs", [])[:MAX_PREPARE]:
+        runtime.checkpoint(config)
+        try:
+            d = tools.call(c, "writer.draft", {"job": _job_brief(j), "role": state.get("role", ""),
+                                               "years": float(state.get("years") or 0)})
+        except tools.ToolError as e:
+            drafts.append({"id": j["id"], "error": str(e)[:300]})
+            continue
+        rejected = [str(x)[:200] for x in (d["resume"].get("checks") or [])]  # changes tailor_rules refused
+        drafts.append({"id": j["id"], "title": j.get("title"), "company": j.get("company"), **d,
+                       "rejected_changes": rejected})
+    ok = sum(1 for d in drafts if "error" not in d)
+    return {"drafts": drafts, "notes": [f"Drafted materials for {ok} of {len(drafts)} jobs (nothing saved)"]}
+
+
+def build_writer():
+    g = StateGraph(WriterState)
+    g.add_node("draft", writer_draft)
+    g.add_edge(START, "draft")
+    g.add_edge("draft", END)
+    return g
+
+
 # ---- Orchestrator -------------------------------------------------------------------------------------------------
 
 class OrchestratorState(TypedDict, total=False):
@@ -301,6 +341,7 @@ class OrchestratorState(TypedDict, total=False):
     scout: dict
     analysis: dict
     research: dict
+    writing: dict
     report: dict
     notes: Annotated[list, operator.add]
 
@@ -321,7 +362,7 @@ def orch_plan(state, config):
     except (TypeError, ValueError):
         years, count = 0.0, 10
     criteria = {"role": role, "years": years, "location": str(c.get("location") or "")[:120], "count": count,
-                "research": bool(c.get("research"))}
+                "research": bool(c.get("research")), "prepare": c.get("prepare") is not False}
     return {"criteria": criteria, "notes": [f"Looking for {count} × {role}" + (f" in {criteria['location']}" if criteria["location"] else "")]}
 
 
@@ -347,7 +388,26 @@ def orch_analyst(state, config):
 def orch_needs_research(state):
     """Research only when asked (criteria.research) and there are picks to research."""
     picks = [s for s in ((state.get("analysis") or {}).get("result") or {}).get("shortlist", []) if s.get("recommend")]
-    return "research" if state["criteria"].get("research") and picks else "report"
+    return "research" if state["criteria"].get("research") and picks else orch_after_research(state)
+
+
+def _picks(state):
+    return [s for s in ((state.get("analysis") or {}).get("result") or {}).get("shortlist", [])
+            if s.get("recommend")][:state["criteria"]["count"]]
+
+
+def orch_after_research(state):
+    return "write" if state["criteria"].get("prepare") and _picks(state) else "report"
+
+
+def orch_write(state, config):
+    texts = {j["id"]: j for j in (state["scout"]["result"].get("jobs") or [])}
+    jobs = [{**texts.get(p["id"], {}), **{k: p[k] for k in ("id", "title", "company") if k in p}}
+            for p in _picks(state)][:MAX_PREPARE]
+    cr = state["criteria"]
+    child = runtime.delegate(config, "writer", {"role": cr["role"], "years": cr["years"], "jobs": jobs}, "write")
+    return {"writing": {"status": child["status"], "result": child.get("result") or {}, "error": child.get("error"),
+                        "task_id": child["id"]}}
 
 
 def orch_research(state, config):
@@ -365,12 +425,15 @@ def orch_report(state, config):
     cr, scout, analysis = state["criteria"], state.get("scout") or {}, state.get("analysis") or {}
     shortlist = (analysis.get("result") or {}).get("shortlist") or []
     picks = [s for s in shortlist if s.get("recommend")][:cr["count"]]
-    research = state.get("research") or {}
+    research, writing = state.get("research") or {}, state.get("writing") or {}
     problems = [f"{name} {part['status']}: {part.get('error') or 'no result'}" for name, part in
-                (("Job search", scout), ("Job analysis", analysis), ("Company research", research))
+                (("Job search", scout), ("Job analysis", analysis), ("Company research", research),
+                 ("Preparing materials", writing))
                 if part and part.get("status") != "done"]
     facts = {f["name"]: f for f in (research.get("result") or {}).get("findings", [])}
     picks = [{**p, "company_research": facts[p["company"]]} if p["company"] in facts else p for p in picks]
+    drafts = {d["id"]: d for d in (writing.get("result") or {}).get("drafts", [])}
+    picks = [{**p, "materials": drafts[p["id"]]} if p["id"] in drafts else p for p in picks]
     if scout.get("status") == "done" and not scout.get("result", {}).get("jobs"):
         problems.append("The search found no open jobs that fit the role.")
     report = {"criteria": cr, "found": len(scout.get("result", {}).get("jobs") or []), "analysed": len(shortlist),
@@ -391,8 +454,10 @@ def build_orchestrator():
     g.add_edge("plan", "scout")
     g.add_conditional_edges("scout", orch_next, {"analyst": "analyst", "report": "report"})
     g.add_node("research", orch_research)
-    g.add_conditional_edges("analyst", orch_needs_research, {"research": "research", "report": "report"})
-    g.add_edge("research", "report")
+    g.add_node("write", orch_write)
+    g.add_conditional_edges("analyst", orch_needs_research, {"research": "research", "write": "write", "report": "report"})
+    g.add_conditional_edges("research", orch_after_research, {"write": "write", "report": "report"})
+    g.add_edge("write", "report")
     g.add_edge("report", END)
     return g
 
@@ -412,9 +477,13 @@ def register():
         description="Finds validated public facts about the employers of the shortlisted jobs.",
         instructions="at most 3 companies; every fact checked against its page; read-only"))
     runtime.register_agent(runtime.Agent(
-        "orchestrator", "2", "orchestrator-2", frozenset(), build_orchestrator, max_steps=10,
+        "writer", "1", "writer-1", frozenset({"writer.draft"}), build_writer, max_steps=4,
+        description="Drafts a tailored resume (order only), a cover letter and form answers for the top picks.",
+        instructions="at most 3 jobs; reorder-only resumes checked by tailor_rules; nothing saved; drafts only"))
+    runtime.register_agent(runtime.Agent(
+        "orchestrator", "3", "orchestrator-3", frozenset(), build_orchestrator, max_steps=10,
         description="Turns a job-search goal into a plan, delegates to the Scout and the Analyst, and reports.",
-        instructions="goal to criteria; delegate scout then analyst, researcher when asked; report honestly"))
+        instructions="goal to criteria; scout, analyst, researcher when asked, writer for the top picks; report honestly"))
 
 
 register()

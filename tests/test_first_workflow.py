@@ -102,14 +102,14 @@ def test_whole_workflow_without_a_model(world):
     assert all(p["rule_breaks"] == [] and p["score"] >= 50 for p in r["recommended"])
     assert r["problems"] == [] and r["mode"] == "shadow" and any("no model set up" in n for n in r["analyst_notes"])
     kids = tasks.children(uid, tid)
-    assert [k["agent_id"] for k in kids] == ["job_scout", "job_analyst"] and all(k["status"] == "done" for k in kids)
+    assert [k["agent_id"] for k in kids] == ["job_scout", "job_analyst", "writer"] and all(k["status"] == "done" for k in kids)
     assert {k["trace_id"] for k in kids} == {tid} and all(k["depth"] == 1 for k in kids)
     # shadow and read-only: no approvals, nothing saved to the user's own match results
     assert approvals.list_for(uid) == [] and A.Workspace(uid).load("ai_match", None) == before
     ev = [e["event"] for e in tasks.events(uid, tid)]
-    assert ev.count("waiting") == 2 and ev.count("resumed") == 2
+    assert ev.count("waiting") == 3 and ev.count("resumed") == 3
     runs = runtime.runs_for(uid)
-    assert {r_["agent_id"] for r_ in runs} == {"orchestrator", "job_scout", "job_analyst"}
+    assert {r_["agent_id"] for r_ in runs} == {"orchestrator", "job_scout", "job_analyst", "writer"}
 
 
 def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(world, monkeypatch):
@@ -117,7 +117,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
 
     def answer(system, human):
         if "search criteria" in system:
-            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False}
+            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False, "prepare": True}
         if "plan a job search" in system:
             return {"searches": [{"source": "career_sites", "role": "Backend Engineer"}], "why": "ATS boards first"}
         return {"fit": 20 if "Initech" in human else 85, "verdict": "Strong match on Django APIs", "red_flags": []}
@@ -125,7 +125,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
     tid = start(uid, goal="Find me 3 backend jobs that use Django")
     run_all()
     r = report(uid, tid)
-    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False}
+    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False, "prepare": True}
     assert world["searches"][0] == ("career_sites", "Backend Engineer")       # the model's plan was followed
     assert len(world["searches"]) == len(set(world["searches"]))              # no search is ever repeated
     assert r["scout_notes"][0] == "Round 1: ATS boards first"
@@ -216,10 +216,10 @@ def test_researcher_runs_only_when_asked_and_its_facts_reach_the_report(world, m
     monkeypatch.setattr(research, "research_text", fake_text)
     monkeypatch.setattr(research, "validate", lambda raw, rec, fetch=None: {"fields": {"website": [
         {"value": f"https://{rec['name'].lower()}.example", "source": "x", "excerpt": "e"}]}})
-    tid = start(uid, criteria={"role": "Backend Developer", "years": 4})
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "prepare": False})
     run_all()
     assert seen == [] and [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst"]
-    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "research": True, "count": 2})
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "research": True, "count": 2, "prepare": False})
     run_all()
     r = report(uid, tid)
     assert [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst", "researcher"]
@@ -234,3 +234,51 @@ def test_research_without_a_website_is_a_reported_answer_not_a_crash(world):
     ctx = tools.ToolContext(uid=uid, grants=frozenset({"company.research"}), mode="shadow")
     out = tools.call(ctx, "company.research", {"name": "Acme"})
     assert out["status"] == "failed" and "website" in out["error"]
+
+
+def test_writer_prepares_drafts_for_the_top_picks_and_saves_nothing(world, monkeypatch):
+    from features.ai_jobs import evaluate, extras
+    uid = world["uid"]
+    ws = A.Workspace(uid)
+    with ws.lock:
+        ws.save("ai_answers", {"a1": {"question": "Why do you want to work here?", "answer": "I like {company}.",
+                                     "status": "approved", "company": ""}})
+    before = {k: ws.load(k, None) for k in ("ai_resumes", "ai_covers", "ai_resume_struct", "ai_answers")}
+    monkeypatch.setattr(evaluate, "resume_for", lambda w: RESUME)
+    monkeypatch.setattr(extras, "resume_for", lambda w: RESUME)
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "count": 5})
+    run_all()
+    r = report(uid, tid)
+    assert [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst", "writer"]
+    prepared = [p for p in r["recommended"] if "materials" in p]
+    assert 1 <= len(prepared) <= 3
+    m = prepared[0]["materials"]
+    assert m["cover_letter"].startswith("Dear") and prepared[0]["company"] in m["cover_letter"]
+    assert m["resume"]["skills"] and m["engine"] == "Inkwell AI" and m["rejected_changes"] == []
+    assert {k: ws.load(k, None) for k in before} == before            # nothing saved: drafts live only in the report
+    assert approvals.list_for(uid) == []
+
+
+def test_writer_uses_only_approved_answers_and_marks_drafts(world, monkeypatch):
+    from features.ai_jobs import evaluate, extras
+    uid = world["uid"]
+    ws = A.Workspace(uid)
+    with ws.lock:
+        ws.save("ai_answers", {"a1": {"question": "Why do you want to work here?", "answer": "I like {company}.",
+                                     "status": "approved"},
+                               "a2": {"question": "Expected salary?", "answer": "lots", "status": "review"}})
+    monkeypatch.setattr(extras, "resume_for", lambda w: RESUME)
+    monkeypatch.setattr(evaluate, "draft_answers", lambda profile, job, jd, qs: [{"question": q, "answer": "draft"} for q in qs])
+    ctx = tools.ToolContext(uid=uid, grants=frozenset({"writer.draft"}), mode="shadow")
+    out = tools.call(ctx, "writer.draft", {"job": {"id": "gh:acme:1", "title": "Backend Engineer", "company": "Acme",
+                                                   "text": "Python Django"},
+                                           "questions": ["Why do you want to work here?", "Expected salary?"]})
+    assert out["answers"] == [{"question": "Why do you want to work here?", "answer": "I like Acme.", "source": "approved"},
+                              {"question": "Expected salary?", "answer": "draft", "source": "draft"}]
+
+
+def test_prepare_false_skips_the_writer(world):
+    uid = world["uid"]
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "prepare": False})
+    run_all()
+    assert [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst"]

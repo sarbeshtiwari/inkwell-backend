@@ -29,10 +29,12 @@ from infra import schedule
 
 
 
-def tailor(ws, job):
-    """A resume for this job: summary and skills aimed at it, the most relevant work first. Returns a dict."""
+def tailor(ws, job, jd=None, cache=True):
+    """A resume for this job: summary and skills aimed at it, the most relevant work first. Returns a dict.
+    `jd`: the posting text (default: the one saved by the match run). cache=False writes nothing to the workspace
+    (agents drafting in shadow mode)."""
     original = resume_for(ws)
-    jd = job_text(ws, job)
+    jd = job_text(ws, job) if jd is None else jd
     kw = signals.keyword_coverage(f"{job['title']} {jd}", original)
     lines = resume_lines(original)
     jt = tokens(f"{job['title']} {jd}")
@@ -43,7 +45,7 @@ def tailor(ws, job):
     if cfg:
         with models.use(cfg):
             try:
-                ordered(ws, cfg, original, job, jd, out)
+                ordered(ws, cfg, original, job, jd, out, cache)
                 out["engine"] = f"Inkwell AI + {cfg['label']}"
             except Exception as e:
                 print(f"[Inkwell] tailored resume model step skipped: {e!r}", flush=True)
@@ -57,7 +59,7 @@ def tailor(ws, job):
     return out
 
 
-def resume_structure(ws, cfg, original):
+def resume_structure(ws, cfg, original, cache=True):
     """The resume split into summary, skill groups and roles, every piece copied word for word from the resume text.
     Pieces that aren't in the resume are dropped. Cached per resume, since the resume rarely changes."""
     import hashlib
@@ -85,7 +87,8 @@ def resume_structure(ws, cfg, original):
                 items.append({**{k: v if R.verbatim(v, of) else "" for k, v in fields.items()}, "bullets": bullets})
         if items:
             data["sections"].append({"heading": str(sec.get("heading") or "")[:40], "items": items})
-    ws.save("ai_resume_struct", {"key": key, "data": data})
+    if cache:
+        ws.save("ai_resume_struct", {"key": key, "data": data})
     return data
 
 
@@ -105,10 +108,10 @@ def analysis_of(r):
              else "gap"} for q in (r.get("requirements") or []) if isinstance(q, dict)][:12]
 
 
-def ordered(ws, cfg, original, job, jd, out):
+def ordered(ws, cfg, original, job, jd, out, cache=True):
     """Morrow's tailoring: the AI proposes an order (and may rewrite the summary); tailor_rules accepts only pure
     reorderings and a summary grounded in the resume. Fills out[summary, skills, sections, notes, analysis]."""
-    base = resume_structure(ws, cfg, original)
+    base = resume_structure(ws, cfg, original, cache)
     roles = [(si, ii, it) for si, sec in enumerate(base["sections"]) for ii, it in enumerate(sec["items"])]
     listing = {"summary": base["summary"], "skills": {c: items for c, items in base["skills"]},
                "roles": [{"index": n, "role": f"{it['title']} {it['org']}".strip(), "bullets": list(enumerate(it["bullets"]))}

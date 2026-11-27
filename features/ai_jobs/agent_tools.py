@@ -123,3 +123,33 @@ def research_company(ctx, name, website="", jobs=()):
     except ValueError as e:  # e.g. no website and no web-searching AI: an answer, not a crash
         return {"status": "failed", "fields": {}, "error": str(e)[:300]}
     return {"status": research.status_of(result), "fields": result.get("fields") or {}}
+
+
+@tool("writer.draft", "1", "Draft the application materials for one job without saving anything: a tailored resume "
+      "(order only: tailor_rules rejects any change that adds, drops or alters a fact), a cover letter, and answers to "
+      "the given form questions (approved answers from the user's bank as they are; new ones marked as drafts).",
+      {"type": "object", "additionalProperties": False, "required": ["job"], "properties": {
+          "job": JOB, "role": {"type": "string", "maxLength": 120}, "years": {"type": "number", "minimum": 0, "maximum": 60},
+          "questions": {"type": "array", "items": SHORT, "maxItems": 12}}},
+      {"type": "object", "required": ["resume", "cover_letter", "answers", "engine"]}, READ, timeout=900)
+def draft(ctx, job, role="", years=0, questions=()):
+    from features.ai_jobs import answers as bank, evaluate, extras, models
+    ws = ctx.workspace()
+    jd = job.get("text", "")
+    j = {"location": "", "url": "", "summary": jd[:400], **job}
+    t = extras.tailor(ws, j, jd=jd, cache=False)
+    resume = {k: t.get(k) for k in ("summary", "skills", "highlights", "sections", "skill_groups", "checks", "notes",
+                                    "analysis", "keywords") if t.get(k) is not None}
+    profile = {"role": role or job["title"], "years": years, "resume": t.get("original", "")}
+    with models.use(models.config(ws)):
+        letter = evaluate.cover_letter(profile, j, jd, ws.profile().get("name", "").strip())
+        saved = ws.load("ai_answers", {}) or {}
+        out, missing = [], []
+        for q in questions:
+            a = bank.answer_for(saved, q, job["company"])  # only approved answers are ever returned
+            if a:
+                out.append({"question": q, "answer": a, "source": "approved"})
+            else:
+                missing.append(q)
+        out += [{**a, "source": "draft"} for a in evaluate.draft_answers(profile, j, jd, missing)]
+    return {"resume": resume, "cover_letter": letter, "answers": out, "engine": t.get("engine", "Inkwell AI")}
