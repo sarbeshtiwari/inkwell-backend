@@ -77,7 +77,8 @@ def init_storage():
     from infra import approvals
     approvals.ensure_indexes()
     telemetry.ensure_indexes()
-    M.kill_switches.create_index("active")
+    from core.db import ensure_index
+    ensure_index(M.kill_switches, "active")
     locks.ensure_indexes()
     gateway.ensure_indexes()
     tasks.ensure_indexes()

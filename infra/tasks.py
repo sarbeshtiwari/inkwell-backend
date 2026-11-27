@@ -40,7 +40,7 @@ from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from core.crypto import seal, unseal
-from core.db import M
+from core.db import M, ensure_index
 from core.validation import Invalid
 from infra.redact import error_text
 
@@ -129,15 +129,15 @@ def register(kind, fn):
 
 
 def ensure_indexes():
-    M.tasks.create_index([("status", ASCENDING), ("priority", DESCENDING), ("created_at", ASCENDING)])
-    M.tasks.create_index([("status", ASCENDING), ("lease_until", ASCENDING)])
-    M.tasks.create_index([("uid", ASCENDING), ("created_at", DESCENDING)])
-    M.tasks.create_index([("uid", ASCENDING), ("idempotency_key", ASCENDING)], unique=True,
+    ensure_index(M.tasks, [("status", ASCENDING), ("priority", DESCENDING), ("created_at", ASCENDING)])
+    ensure_index(M.tasks, [("status", ASCENDING), ("lease_until", ASCENDING)])
+    ensure_index(M.tasks, [("uid", ASCENDING), ("created_at", DESCENDING)])
+    ensure_index(M.tasks, [("uid", ASCENDING), ("idempotency_key", ASCENDING)], unique=True,
                          partialFilterExpression={"idempotency_key": {"$type": "string"}})
-    M.tasks.create_index("parent_id", sparse=True)
-    M.tasks.create_index([("agent_id", ASCENDING), ("status", ASCENDING)], sparse=True)
-    M.task_events.create_index([("task_id", ASCENDING), ("at", ASCENDING)])
-    M.task_events.create_index([("uid", ASCENDING), ("at", DESCENDING)])
+    ensure_index(M.tasks, "parent_id", sparse=True)
+    ensure_index(M.tasks, [("agent_id", ASCENDING), ("status", ASCENDING)], sparse=True)
+    ensure_index(M.task_events, [("task_id", ASCENDING), ("at", ASCENDING)])
+    ensure_index(M.task_events, [("uid", ASCENDING), ("at", DESCENDING)])
 
 
 def _now():

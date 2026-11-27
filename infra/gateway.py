@@ -32,7 +32,7 @@ import requests
 from pymongo import DESCENDING
 from pymongo.errors import PyMongoError
 
-from core.db import M
+from core.db import M, ensure_index
 from infra.redact import error_text
 
 log = logging.getLogger("inkwell.gateway")
@@ -108,11 +108,11 @@ def current_context():
 
 
 def ensure_indexes():
-    M.model_usage.create_index([("uid", 1), ("day", 1)])
-    M.model_usage.create_index([("day", 1), ("model_id", 1)])
-    M.model_usage.create_index("trace_id", sparse=True)
-    M.model_usage.create_index("root_task_id", sparse=True)
-    M.model_prices.create_index([("provider", 1), ("model", 1), ("effective_from", DESCENDING)])
+    ensure_index(M.model_usage, [("uid", 1), ("day", 1)])
+    ensure_index(M.model_usage, [("day", 1), ("model_id", 1)])
+    ensure_index(M.model_usage, "trace_id", sparse=True)
+    ensure_index(M.model_usage, "root_task_id", sparse=True)
+    ensure_index(M.model_prices, [("provider", 1), ("model", 1), ("effective_from", DESCENDING)])
 
 
 # ---- the call ----------------------------------------------------------------------------------------------------

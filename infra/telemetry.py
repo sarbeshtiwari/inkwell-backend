@@ -29,7 +29,7 @@ from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import PyMongoError
 
 from core.crypto import seal, unseal
-from core.db import M
+from core.db import M, ensure_index
 from infra import redact
 from infra.redact import error_text
 
@@ -44,13 +44,13 @@ _LOCAL = threading.local()
 
 
 def ensure_indexes():
-    M.traces.create_index([("uid", ASCENDING), ("started", DESCENDING)])
-    M.traces.create_index([("status", ASCENDING), ("started", DESCENDING)])
-    M.spans.create_index([("trace_id", ASCENDING), ("start", ASCENDING)])
-    M.spans.create_index([("uid", ASCENDING), ("start", DESCENDING)])
-    M.spans.create_index([("type", ASCENDING), ("start", DESCENDING)])
+    ensure_index(M.traces, [("uid", ASCENDING), ("started", DESCENDING)])
+    ensure_index(M.traces, [("status", ASCENDING), ("started", DESCENDING)])
+    ensure_index(M.spans, [("trace_id", ASCENDING), ("start", ASCENDING)])
+    ensure_index(M.spans, [("uid", ASCENDING), ("start", DESCENDING)])
+    ensure_index(M.spans, [("type", ASCENDING), ("start", DESCENDING)])
     for c in (M.traces, M.spans):
-        c.create_index("expire_at", expireAfterSeconds=0)
+        ensure_index(c, "expire_at", expireAfterSeconds=0)
 
 
 def _expiry():

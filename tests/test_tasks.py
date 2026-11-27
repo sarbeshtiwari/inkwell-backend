@@ -161,7 +161,9 @@ def test_heartbeat_keeps_a_long_task_alive_past_its_lease():
     assert result["r"] == (tid, tasks.DONE) and tasks.get(uid, tid)["attempts"] == 1
 
 
-def test_retries_with_backoff_then_success():
+def test_retries_with_backoff_then_success(monkeypatch):
+    monkeypatch.setattr(tasks, "RETRY_BASE_SECONDS", 0.4)  # long enough not to elapse inside drain() under load
+    monkeypatch.setattr(tasks, "RETRY_MAX_SECONDS", 2.0)
     uid, _ = make_user()
     calls = []
 
@@ -181,7 +183,7 @@ def test_retries_with_backoff_then_success():
         drain()
     assert calls == [1, 2, 3] and tasks.get(uid, tid)["status"] == "done"
     ev = [e for e in tasks.events(uid, tid) if e["event"] == "retry_scheduled"]
-    assert [e["backoff_seconds"] for e in ev] == [0.05, 0.1]
+    assert [e["backoff_seconds"] for e in ev] == [0.4, 0.8]
 
 
 def test_dead_letter_after_max_attempts():

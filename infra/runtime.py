@@ -42,20 +42,20 @@ from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
 
 from core.crypto import fernet
-from core.db import M
+from core.db import M, ensure_index
 from infra import tasks, telemetry, tools
 
 AGENT_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def ensure_indexes():
-    M.checkpoints.create_index([("uid", ASCENDING), ("thread_id", ASCENDING), ("ns", ASCENDING), ("checkpoint_id", DESCENDING)],
+    ensure_index(M.checkpoints, [("uid", ASCENDING), ("thread_id", ASCENDING), ("ns", ASCENDING), ("checkpoint_id", DESCENDING)],
                                unique=True)
-    M.checkpoint_writes.create_index([("uid", ASCENDING), ("thread_id", ASCENDING), ("ns", ASCENDING),
+    ensure_index(M.checkpoint_writes, [("uid", ASCENDING), ("thread_id", ASCENDING), ("ns", ASCENDING),
                                       ("checkpoint_id", ASCENDING), ("task_id", ASCENDING), ("idx", ASCENDING)], unique=True)
-    M.agent_runs.create_index([("uid", ASCENDING), ("started", DESCENDING)])
-    M.agent_runs.create_index([("agent_id", ASCENDING), ("agent_version", ASCENDING), ("started", DESCENDING)])
-    M.agent_runs.create_index("task_id")
+    ensure_index(M.agent_runs, [("uid", ASCENDING), ("started", DESCENDING)])
+    ensure_index(M.agent_runs, [("agent_id", ASCENDING), ("agent_version", ASCENDING), ("started", DESCENDING)])
+    ensure_index(M.agent_runs, "task_id")
 
 
 # ---- checkpointer -------------------------------------------------------------------------------------------------
