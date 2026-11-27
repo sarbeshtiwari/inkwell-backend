@@ -29,7 +29,7 @@ from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from core.crypto import seal, unseal
-from core.db import M
+from core.db import M, ensure_index
 from core.validation import Invalid
 from infra import audit, telemetry
 
@@ -43,8 +43,8 @@ class ApprovalPending(Exception):
 
 
 def ensure_indexes():
-    M.approvals.create_index([("uid", ASCENDING), ("task_id", ASCENDING), ("call_key", ASCENDING)], unique=True)
-    M.approvals.create_index([("uid", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)])
+    ensure_index(M.approvals, [("uid", ASCENDING), ("task_id", ASCENDING), ("call_key", ASCENDING)], unique=True)
+    ensure_index(M.approvals, [("uid", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)])
 
 
 def _now():
@@ -84,6 +84,14 @@ def get(uid, approval_id):
 
 
 # ---- used by the tool layer ---------------------------------------------------------------------------------------
+
+def ensure(ctx, tool, args):
+    """Make sure an approval exists for this exact call and return its status, without pausing. Lets an agent ask
+    for several approvals at once (then pause once), instead of one pause per action."""
+    key = call_key(tool.id, args)
+    doc = M.approvals.find_one({"uid": ctx.uid, "task_id": ctx.task_id, "call_key": key}) or _create(ctx, tool, args, key)
+    return doc["status"]
+
 
 def gate(ctx, tool, args, run):
     """Run an external_action tool only with an approval for this exact call. `run(final_args)` performs it."""

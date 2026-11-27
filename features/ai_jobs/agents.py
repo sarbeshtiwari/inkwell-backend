@@ -4,6 +4,7 @@
                  ──delegates──► Job Analyst (decide fit, explain, flag rule breaks)
                  ──delegates──► Researcher  (only when asked: validated facts about the picks' employers)
                  ──delegates──► Writer      (drafts for the top picks: tailored resume, cover letter; nothing saved)
+                 ──delegates──► Applicant   (only when asked: one approval per application; submits nothing in shadow)
                  ──► report
 
 Each agent decides what to do next from what it has seen; none is a fixed pipeline:
@@ -333,6 +334,66 @@ def build_writer():
     return g
 
 
+# ---- Applicant ----------------------------------------------------------------------------------------------------
+
+class ApplicantState(TypedDict, total=False):
+    jobs: list            # jobs to apply to: {id, title, company, url, apply_url?, ats?, board?}
+    ready: list
+    outcomes: list
+    notes: Annotated[list, operator.add]
+
+
+MAX_APPLY = 5
+SUBMIT_FIELDS = ("id", "title", "company", "location", "url", "apply_url", "ats", "board")
+
+
+def applicant_prepare(state, config):
+    jobs = [{k: str(j[k]) for k in SUBMIT_FIELDS if j.get(k)} for j in state.get("jobs", [])[:MAX_APPLY]]
+    checks = tools.call(runtime.ctx(config), "applications.prepare", {"jobs": jobs})
+    ready = [j for j, c in zip(jobs, checks) if c["ready"]]
+    skipped = [{"id": c["id"], "state": "skipped", "detail": c["why_not"]} for c in checks if not c["ready"]]
+    return {"ready": ready, "outcomes": skipped, "notes": [f"{len(ready)} of {len(jobs)} jobs can be applied to"]}
+
+
+def applicant_submit(state, config):
+    """Shadow: report what would be asked, ask nothing. On: ask approval for every ready job at once, pause once,
+    then submit each approved one (exactly once) and skip each declined one."""
+    c = runtime.ctx(config)
+    outcomes = list(state.get("outcomes", []))
+    if c.mode == "shadow":
+        outcomes += [{"id": j["id"], "state": "would_ask_approval"} for j in state.get("ready", [])]
+        return {"outcomes": outcomes, "notes": ["Shadow mode: no approvals asked, nothing submitted"]}
+    pending = []
+    for j in state.get("ready", []):
+        runtime.checkpoint(config)
+        if tools.request_approval(c, "applications.submit", {"job": j}) == "pending":
+            pending.append(j["id"])
+    if pending:
+        from langgraph.types import interrupt
+        interrupt({"waiting_for": "approval", "count": len(pending)})
+    for j in state.get("ready", []):
+        runtime.checkpoint(config)
+        try:
+            res = tools.call(c, "applications.submit", {"job": j})
+            outcomes.append({"id": j["id"], **res})
+        except tools.ApprovalRejected:
+            outcomes.append({"id": j["id"], "state": "declined", "detail": "You declined this application."})
+        except tools.OutcomeUnknown as e:
+            outcomes.append({"id": j["id"], "state": "outcome_unknown", "detail": str(e)})
+    done = sum(1 for o in outcomes if o["state"] == "applied")
+    return {"outcomes": outcomes, "notes": [f"Applied to {done}; {len(outcomes) - done} not submitted"]}
+
+
+def build_applicant():
+    g = StateGraph(ApplicantState)
+    g.add_node("prepare", applicant_prepare)
+    g.add_node("submit", applicant_submit)
+    g.add_edge(START, "prepare")
+    g.add_edge("prepare", "submit")
+    g.add_edge("submit", END)
+    return g
+
+
 # ---- Orchestrator -------------------------------------------------------------------------------------------------
 
 class OrchestratorState(TypedDict, total=False):
@@ -342,6 +403,7 @@ class OrchestratorState(TypedDict, total=False):
     analysis: dict
     research: dict
     writing: dict
+    applying: dict
     report: dict
     notes: Annotated[list, operator.add]
 
@@ -362,7 +424,8 @@ def orch_plan(state, config):
     except (TypeError, ValueError):
         years, count = 0.0, 10
     criteria = {"role": role, "years": years, "location": str(c.get("location") or "")[:120], "count": count,
-                "research": bool(c.get("research")), "prepare": c.get("prepare") is not False}
+                "research": bool(c.get("research")), "prepare": c.get("prepare") is not False,
+                "apply": bool(c.get("apply"))}
     return {"criteria": criteria, "notes": [f"Looking for {count} × {role}" + (f" in {criteria['location']}" if criteria["location"] else "")]}
 
 
@@ -397,7 +460,7 @@ def _picks(state):
 
 
 def orch_after_research(state):
-    return "write" if state["criteria"].get("prepare") and _picks(state) else "report"
+    return "write" if state["criteria"].get("prepare") and _picks(state) else orch_after_write(state)
 
 
 def orch_write(state, config):
@@ -408,6 +471,18 @@ def orch_write(state, config):
     child = runtime.delegate(config, "writer", {"role": cr["role"], "years": cr["years"], "jobs": jobs}, "write")
     return {"writing": {"status": child["status"], "result": child.get("result") or {}, "error": child.get("error"),
                         "task_id": child["id"]}}
+
+
+def orch_after_write(state):
+    return "apply" if state["criteria"].get("apply") and _picks(state) else "report"
+
+
+def orch_apply(state, config):
+    texts = {j["id"]: j for j in (state["scout"]["result"].get("jobs") or [])}
+    jobs = [{**texts.get(p["id"], {}), **p} for p in _picks(state)]
+    child = runtime.delegate(config, "applicant", {"jobs": jobs}, "apply")
+    return {"applying": {"status": child["status"], "result": child.get("result") or {}, "error": child.get("error"),
+                         "task_id": child["id"]}}
 
 
 def orch_research(state, config):
@@ -425,15 +500,17 @@ def orch_report(state, config):
     cr, scout, analysis = state["criteria"], state.get("scout") or {}, state.get("analysis") or {}
     shortlist = (analysis.get("result") or {}).get("shortlist") or []
     picks = [s for s in shortlist if s.get("recommend")][:cr["count"]]
-    research, writing = state.get("research") or {}, state.get("writing") or {}
+    research, writing, applying = state.get("research") or {}, state.get("writing") or {}, state.get("applying") or {}
     problems = [f"{name} {part['status']}: {part.get('error') or 'no result'}" for name, part in
                 (("Job search", scout), ("Job analysis", analysis), ("Company research", research),
-                 ("Preparing materials", writing))
+                 ("Preparing materials", writing), ("Applying", applying))
                 if part and part.get("status") != "done"]
     facts = {f["name"]: f for f in (research.get("result") or {}).get("findings", [])}
     picks = [{**p, "company_research": facts[p["company"]]} if p["company"] in facts else p for p in picks]
     drafts = {d["id"]: d for d in (writing.get("result") or {}).get("drafts", [])}
     picks = [{**p, "materials": drafts[p["id"]]} if p["id"] in drafts else p for p in picks]
+    applied = {o["id"]: o for o in (applying.get("result") or {}).get("outcomes", [])}
+    picks = [{**p, "application": applied[p["id"]]} if p["id"] in applied else p for p in picks]
     if scout.get("status") == "done" and not scout.get("result", {}).get("jobs"):
         problems.append("The search found no open jobs that fit the role.")
     report = {"criteria": cr, "found": len(scout.get("result", {}).get("jobs") or []), "analysed": len(shortlist),
@@ -455,9 +532,12 @@ def build_orchestrator():
     g.add_conditional_edges("scout", orch_next, {"analyst": "analyst", "report": "report"})
     g.add_node("research", orch_research)
     g.add_node("write", orch_write)
-    g.add_conditional_edges("analyst", orch_needs_research, {"research": "research", "write": "write", "report": "report"})
-    g.add_conditional_edges("research", orch_after_research, {"write": "write", "report": "report"})
-    g.add_edge("write", "report")
+    g.add_node("apply", orch_apply)
+    g.add_conditional_edges("analyst", orch_needs_research,
+                            {"research": "research", "write": "write", "apply": "apply", "report": "report"})
+    g.add_conditional_edges("research", orch_after_research, {"write": "write", "apply": "apply", "report": "report"})
+    g.add_conditional_edges("write", orch_after_write, {"apply": "apply", "report": "report"})
+    g.add_edge("apply", "report")
     g.add_edge("report", END)
     return g
 
@@ -481,9 +561,13 @@ def register():
         description="Drafts a tailored resume (order only), a cover letter and form answers for the top picks.",
         instructions="at most 3 jobs; reorder-only resumes checked by tailor_rules; nothing saved; drafts only"))
     runtime.register_agent(runtime.Agent(
-        "orchestrator", "3", "orchestrator-3", frozenset(), build_orchestrator, max_steps=10,
+        "applicant", "1", "applicant-1", frozenset({"applications.prepare", "applications.submit"}), build_applicant,
+        max_steps=4, description="Checks which picks can be applied to and submits each one only after you approve it.",
+        instructions="at most 5 jobs; one approval per application, asked together; never in shadow mode"))
+    runtime.register_agent(runtime.Agent(
+        "orchestrator", "4", "orchestrator-4", frozenset(), build_orchestrator, max_steps=10,
         description="Turns a job-search goal into a plan, delegates to the Scout and the Analyst, and reports.",
-        instructions="goal to criteria; scout, analyst, researcher when asked, writer for the top picks; report honestly"))
+        instructions="goal to criteria; scout, analyst, researcher when asked, writer, applicant when asked; report"))
 
 
 register()

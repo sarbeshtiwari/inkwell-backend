@@ -8,6 +8,7 @@ from features.ai_jobs import learning, ranking, signals
 from features.ai_jobs.common import J
 from features.ai_jobs.evaluate import get_rules
 from features.ai_jobs.sources import make_tools
+from infra import tools as tools_mod
 from infra.tools import READ, tool
 
 SOURCES = ["career_sites", "remote_boards", "tavily", "brave"]
@@ -153,3 +154,63 @@ def draft(ctx, job, role="", years=0, questions=()):
                 missing.append(q)
         out += [{**a, "source": "draft"} for a in evaluate.draft_answers(profile, j, jd, missing)]
     return {"resume": resume, "cover_letter": letter, "answers": out, "engine": t.get("engine", "Inkwell AI")}
+
+
+SUBMIT_JOB = {"type": "object", "required": ["id", "title", "company", "url"], "additionalProperties": False, "properties": {
+    "id": {"type": "string", "maxLength": 300}, "title": SHORT, "company": SHORT, "location": SHORT,
+    "url": {"type": "string", "maxLength": 2000}, "apply_url": {"type": "string", "maxLength": 2000},
+    "ats": {"type": "string", "maxLength": 60}, "board": {"type": "string", "maxLength": 200}}}
+
+
+def eligibility(ws, job):
+    """Why this job can't be applied to by Inkwell (None when it can): the same limits the Apply button has."""
+    from features.ai_jobs import siteapply
+    from features.ai_jobs.apply import is_blocked_board
+    m = siteapply.mode(job)
+    if not m:
+        return "Inkwell doesn't apply on this site (apply on the site yourself)."
+    if m == "account":
+        return "This site needs you to sign in first: use Watch mode on your own computer."
+    if ((ws.load("ai_applied", {}) or {}).get(job["id"]) or {}).get("state") == "applied":
+        return "Already applied."
+    if is_blocked_board(ws, job):
+        return "This job board blocked automated applications before."
+    if not ws.profile().get("phone"):
+        return "Add your phone number on the Profile page first; application forms ask for it."
+    return None
+
+
+@tool("applications.prepare", "1", "Check which jobs Inkwell could apply to for the user (supported site, not applied "
+      "yet, board not blocked, phone number on file). Changes nothing.",
+      {"type": "object", "additionalProperties": False, "required": ["jobs"], "properties": {
+          "jobs": {"type": "array", "items": SUBMIT_JOB, "maxItems": 20}}},
+      {"type": "array", "items": {"type": "object", "required": ["id", "ready"]}}, READ)
+def prepare_applications(ctx, jobs):
+    ws = ctx.workspace()
+    out = []
+    for j in jobs:
+        why = eligibility(ws, j)
+        out.append({"id": j["id"], "ready": why is None, "why_not": why})
+    return out
+
+
+@tool("applications.submit", "1", "Submit the application form for one job, as the user, with their details and "
+      "resume. An external action: it runs only after the user approves this exact application.",
+      {"type": "object", "additionalProperties": False, "required": ["job"], "properties": {"job": SUBMIT_JOB}},
+      {"type": "object", "required": ["state"], "properties": {
+          "state": {"type": "string", "enum": ["applied", "needs_you", "closed", "blocked", "skipped"]},
+          "detail": {"type": "string", "maxLength": 1000}, "url": {"type": "string", "maxLength": 2000}}},
+      tools_mod.EXTERNAL_ACTION, timeout=600)
+def submit_application(ctx, job):
+    from core.security import rate_limited
+    from features.ai_jobs.common import APPLY_PER_DAY
+    from features.ai_jobs.routes import submit_and_record
+    ws = ctx.workspace()
+    why = eligibility(ws, job)  # checked again now: things may have changed while the approval waited
+    if why:
+        return {"state": "skipped", "detail": why}
+    if rate_limited(("ai-apply", ctx.uid), APPLY_PER_DAY, 86400):  # the same daily limit as the Apply button
+        return {"state": "skipped", "detail": f"Inkwell applies to at most {APPLY_PER_DAY} jobs a day."}
+    res = submit_and_record(ws, job)
+    return {"state": res["state"] if res["state"] in ("applied", "needs_you", "closed", "blocked") else "needs_you",
+            "detail": str(res.get("detail", ""))[:1000], "url": str(res.get("url", ""))[:2000]}

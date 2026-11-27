@@ -13,6 +13,27 @@ from features.ai_jobs.tracker import set_status
 from features.ai_jobs.watch import run_watch
 
 
+def submit_and_record(ws, job, visible=False):
+    """Apply to one job (liveness gate first) and record the outcome the same way every time: ai_applied, the
+    applications tracker, the job's status. Returns the result ({state, detail, url, at})."""
+    try:
+        res = closed_result(job) or apply_one(ws, job, submit=True, visible=visible)
+    except Exception as e:
+        print(f"[Inkwell] auto-apply error: {error_text(e, 200)}", flush=True)
+        res = {"state": "needs_you", "detail": "The application page didn't load as expected. Apply on the site.", "url": job["url"]}
+    res["at"] = time.time()
+    with ws.lock:
+        done = ws.load("ai_applied", {})
+        done[job["id"]] = res
+        ws.save("ai_applied", done)
+    if res["state"] == "applied":
+        record_application(ws, job)
+    if res["state"] in ("applied", "closed"):
+        set_status(ws, job["id"], "applied" if res["state"] == "applied" else "discarded",
+                   note="" if res["state"] == "applied" else "Posting closed")
+    return res
+
+
 def run_apply(op, uid, picks, visible=False):
     """Submit applications one by one. Cancelling stops before the next application; one being submitted finishes and
     is recorded. Nothing already submitted is retried."""
@@ -23,21 +44,7 @@ def run_apply(op, uid, picks, visible=False):
         for job in picks:
             op.checkpoint()  # before submitting: a cancelled run, or one that lost its lease, stops here
             op.update(private={"current": job["title"]})
-            try:
-                res = closed_result(job) or apply_one(ws, job, submit=True, visible=visible)
-            except Exception as e:
-                print(f"[Inkwell] auto-apply error: {error_text(e, 200)}", flush=True)
-                res = {"state": "needs_you", "detail": "The application page didn't load as expected. Apply on the site.", "url": job["url"]}
-            res["at"] = time.time()
-            with ws.lock:
-                done = ws.load("ai_applied", {})
-                done[job["id"]] = res
-                ws.save("ai_applied", done)
-            if res["state"] == "applied":
-                record_application(ws, job)
-            if res["state"] in ("applied", "closed"):
-                set_status(ws, job["id"], "applied" if res["state"] == "applied" else "discarded",
-                           note="" if res["state"] == "applied" else "Posting closed")
+            submit_and_record(ws, job, visible)
             op.update(inc={"done": 1})
     finally:
         from features.notify import notify

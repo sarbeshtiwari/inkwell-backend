@@ -36,7 +36,9 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
     assert {"profile.candidate", "rules.read", "preferences.taste", "jobs.search", "jobs.rank", "jobs.liveness"} <= ids
     for t in tools.describe():
         if not t["id"].startswith("test."):
-            assert t["risk"] == "read" and t["input_schema"]["additionalProperties"] is False
+            assert t["input_schema"]["additionalProperties"] is False
+            # the only tool that acts outside Inkwell is application submission, and it is approval-gated
+            assert t["risk"] == ("external_action" if t["id"] == "applications.submit" else "read")
     assert [t["id"] for t in tools.describe({"rules.read"})] == ["rules.read"]
 
 

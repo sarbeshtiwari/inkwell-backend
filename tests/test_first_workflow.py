@@ -117,7 +117,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
 
     def answer(system, human):
         if "search criteria" in system:
-            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False, "prepare": True}
+            return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False, "prepare": True, "apply": False}
         if "plan a job search" in system:
             return {"searches": [{"source": "career_sites", "role": "Backend Engineer"}], "why": "ATS boards first"}
         return {"fit": 20 if "Initech" in human else 85, "verdict": "Strong match on Django APIs", "red_flags": []}
@@ -125,7 +125,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
     tid = start(uid, goal="Find me 3 backend jobs that use Django")
     run_all()
     r = report(uid, tid)
-    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False, "prepare": True}
+    assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False, "prepare": True, "apply": False}
     assert world["searches"][0] == ("career_sites", "Backend Engineer")       # the model's plan was followed
     assert len(world["searches"]) == len(set(world["searches"]))              # no search is ever repeated
     assert r["scout_notes"][0] == "Round 1: ATS boards first"
@@ -282,3 +282,79 @@ def test_prepare_false_skips_the_writer(world):
     tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "prepare": False})
     run_all()
     assert [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst"]
+
+
+@pytest.fixture
+def applying(world, monkeypatch):
+    from features.ai_jobs import routes
+    ws = A.Workspace(world["uid"])
+    with ws.lock:
+        ws.save("profile", {**ws.profile(), "phone": "+1 555 0100"})
+    submitted = []
+
+    def fake_submit(ws_, job, visible=False):
+        submitted.append((ws_.uid, job["id"]))
+        return {"state": "applied", "detail": "Thank you for applying", "url": job["url"], "at": 0}
+    monkeypatch.setattr(routes, "submit_and_record", fake_submit)
+    world["submitted"] = submitted
+    return world
+
+
+def test_shadow_mode_applicant_asks_nothing_and_submits_nothing(applying):
+    uid = applying["uid"]
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "count": 3, "apply": True, "prepare": False})
+    run_all()
+    r = report(uid, tid)
+    assert [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst", "applicant"]
+    assert {p["application"]["state"] for p in r["recommended"]} == {"would_ask_approval"}
+    assert applying["submitted"] == [] and approvals.list_for(uid) == []
+
+
+def test_on_mode_asks_one_approval_per_application_and_submits_only_approved_ones_once(applying):
+    uid = applying["uid"]
+    tid = runtime.start(uid, "orchestrator", {"criteria": {"role": "Backend Developer", "years": 4, "count": 3,
+                                                           "apply": True, "prepare": False}}, mode="on")
+    run_all()
+    pend = approvals.list_for(uid, status="pending")
+    assert len(pend) >= 2 and applying["submitted"] == []                 # all asked together, nothing sent yet
+    applicant = [k for k in tasks.children(uid, tid) if k["agent_id"] == "applicant"][0]
+    assert applicant["status"] == "waiting_approval" and tasks.get(uid, tid)["status"] == "waiting_children"
+    yes, no = pend[0], pend[1:]
+    approvals.decide(uid, yes["id"], "approve")
+    run_all()
+    assert applying["submitted"] == []                                     # still waiting for the other decisions
+    for a in no:
+        approvals.decide(uid, a["id"], "reject")
+    run_all()
+    assert applying["submitted"] == [(uid, yes["proposed"]["job"]["id"])]  # exactly the approved one, once
+    r = report(uid, tid)
+    states = {p["id"]: p["application"]["state"] for p in r["recommended"]}
+    assert states[yes["proposed"]["job"]["id"]] == "applied" and list(states.values()).count("declined") == len(no)
+    run_all()
+    assert len(applying["submitted"]) == 1
+
+
+def test_jobs_that_cant_be_applied_to_are_skipped_before_asking(applying):
+    uid = applying["uid"]
+    ws = A.Workspace(uid)
+    with ws.lock:
+        ws.save("ai_applied", {"gh:acme:1": {"state": "applied"}})
+    ctx = tools.ToolContext(uid=uid, grants=frozenset({"applications.prepare"}), mode="shadow")
+    out = tools.call(ctx, "applications.prepare", {"jobs": [
+        {"id": "gh:acme:1", "title": "Dev", "company": "Acme", "url": "https://boards.greenhouse.io/acme/jobs/1", "ats": "greenhouse"},
+        {"id": "x:li:1", "title": "Dev", "company": "LI", "url": "https://www.linkedin.com/jobs/view/1"},
+        {"id": "gh:globex:2", "title": "Dev", "company": "Globex", "url": "https://boards.greenhouse.io/globex/jobs/2", "ats": "greenhouse"}]})
+    assert [(o["id"], o["ready"]) for o in out] == [("gh:acme:1", False), ("x:li:1", False), ("gh:globex:2", True)]
+    assert out[0]["why_not"] == "Already applied."
+
+
+def test_submit_rechecks_eligibility_after_approval(applying):
+    uid = applying["uid"]
+    from features.ai_jobs.agent_tools import submit_application
+    ws = A.Workspace(uid)
+    with ws.lock:
+        ws.save("profile", {**ws.profile(), "phone": ""})
+    ctx = tools.ToolContext(uid=uid, grants=frozenset(), mode="on")
+    out = submit_application(ctx, {"id": "gh:a:1", "title": "Dev", "company": "A", "url": "https://boards.greenhouse.io/a/jobs/1",
+                                   "ats": "greenhouse"})
+    assert out["state"] == "skipped" and "phone" in out["detail"] and applying["submitted"] == []

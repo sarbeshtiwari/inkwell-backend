@@ -220,6 +220,32 @@ def _deny(ctx, t, reason, exc):
     raise exc
 
 
+def request_approval(ctx, tool_id, args):
+    """For an external_action tool: create (or find) the approval for this exact call, with every check call() makes
+    except running it. Returns the approval's status ("pending", "approved", "rejected", ...). Never in shadow mode."""
+    if not isinstance(ctx, ToolContext):
+        raise TypeError("Tools run only with a ToolContext.")
+    t = REGISTRY.get(tool_id)
+    if t is None:
+        raise ToolNotFound(f"There is no tool called {tool_id}.")
+    if t.risk != EXTERNAL_ACTION:
+        raise ToolError(f"{tool_id} doesn't need approval.")
+    if tool_id not in ctx.grants:
+        _deny(ctx, tool_id, "not_granted", ToolDenied(f"This agent may not use {tool_id}."))
+    if ctx.mode == "shadow":
+        raise ShadowRefused(f"{tool_id} acts outside Inkwell, so it doesn't run in shadow mode.")
+    if not ctx.task_id:
+        raise ApprovalRequired(f"{tool_id} needs your approval, and approvals belong to an agent task.")
+    if controls.stopped(ctx.uid, ctx.agent_id):
+        raise ToolDenied("Agent work is stopped right now (kill switch).")
+    try:
+        validate(args, t.input_schema)
+    except ValueError as e:
+        raise InvalidArguments(f"{tool_id}: {e}") from None
+    from infra import approvals
+    return approvals.ensure(ctx, t, args)
+
+
 def call(ctx, tool_id, args=None):
     """Run a granted tool for ctx.uid. Returns its (validated) result; raises a ToolError subclass otherwise."""
     if not isinstance(ctx, ToolContext):
