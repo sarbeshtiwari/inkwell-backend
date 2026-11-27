@@ -80,7 +80,8 @@ def match_state(ws):
         kids = tasks.children(ws.uid, tid)
         live = [k for k in kids if k["status"] not in tasks.FINAL]
         stage = STAGES.get(live[-1]["agent_id"], "Ranking matches") if live else ("Ranking matches" if kids else "Reading your resume")
-        return {**saved, "stage": stage, "results": []}
+        agent = live[-1]["agent_id"] if live else "orchestrator"
+        return {**saved, "stage": stage, "agent": agent, "results": []}
     if t and t["status"] == "done":
         return ws.load("ai_match", None) or saved
     why = "The search was cancelled." if t and t["status"] == "cancelled" else \
