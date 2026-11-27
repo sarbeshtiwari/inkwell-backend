@@ -24,7 +24,7 @@ import threading
 
 log = logging.getLogger("inkwell.worker")
 
-HANDLER_MODULES = ("features.ai_jobs", "features.agent_communicator", "features.agent_inbox", "features.agent_outreach", "features.agent_morning", "features.agent_career", "infra.supervisor")  # importing these registers their tools, agents and task handlers
+HANDLER_MODULES = ("features.ai_jobs", "features.agent_communicator", "features.agent_inbox", "features.agent_outreach", "features.agent_morning", "features.agent_career", "features.agent_finder", "infra.supervisor")  # importing these registers their tools, agents and task handlers
 
 
 def _int(name, default):

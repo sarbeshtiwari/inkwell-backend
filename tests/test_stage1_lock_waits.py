@@ -116,14 +116,12 @@ def test_account_lock_timeout_is_answered_before_anything_is_read(user, short_wa
 
 
 def test_other_409s_keep_no_retry_after(user):
-    from infra import operations
-    op = operations.start(user["uid"], "finder")
-    try:
-        r = user["client"].post("/api/finder/scan", json={"items": [{"company": "A", "website": "https://a.example"}]}, headers=H)
-        assert r.status_code == 409 and "Retry-After" not in r.headers
-    finally:
-        with op:
-            pass
+    from infra import tasks
+    body = {"items": [{"company": "A", "website": "https://a.example"}]}
+    assert user["client"].post("/api/finder/scan", json=body, headers=H).status_code == 200   # a search is now running
+    r = user["client"].post("/api/finder/scan", json=body, headers=H)
+    assert r.status_code == 409 and "Retry-After" not in r.headers
+    tasks.cancel(user["uid"], user["ws"].load("finder", {})["task_id"])
 
 
 # ---- external I/O outside the lock, fresh state afterwards ------------------------------------------------------

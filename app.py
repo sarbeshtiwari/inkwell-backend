@@ -80,6 +80,7 @@ from features import agent_inbox as _agent_inbox  # noqa: E402,F401  (registers 
 from features import agent_outreach as _agent_outreach  # noqa: E402,F401  (registers the Outreach agent)
 from features import agent_morning as _agent_morning  # noqa: E402,F401  (registers the Morning agent)
 from features import agent_career as _agent_career  # noqa: E402,F401  (registers Job Alerts and Weekly Digest)
+from features import agent_finder as _agent_finder  # noqa: E402,F401  (registers the Email Finder agent)
 
 bridge.setup(sys.modules[__name__])
 feature_notify.init()

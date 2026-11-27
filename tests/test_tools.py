@@ -44,7 +44,8 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
                 "write_internal" if t["id"] in ("supervision.pause_agent", "supervision.cancel_task", "supervision.alert",
                                                 "replies.set_state", "inbox.sync", "inbox.summarise",
                                                 "replies.check", "mail.sync", "alerts.scan",
-                                                "alerts.tell", "digest.send", "matches.save") else "read"
+                                                "alerts.tell", "digest.send", "matches.save",
+                                                "finder.record", "finder.save") else "read"
             assert t["risk"] == expected
     assert [t["id"] for t in tools.describe({"rules.read"})] == ["rules.read"]
 
