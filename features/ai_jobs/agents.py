@@ -30,7 +30,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from features.ai_jobs import models
-from features.ai_jobs.ranking import role_fit
+from features.ai_jobs.ranking import location_fits, role_fit
 from infra import runtime, tools
 
 MAX_ROUNDS = 2          # Scout: search, then at most one refinement
@@ -134,7 +134,8 @@ def scout_search(state, config):
                                                  "location": state.get("location", ""), "company": state.get("company", "")})
             total += len(out["jobs"])
             # keep only plausible jobs, as short briefs: boards can return thousands of full postings
-            found += [_job_brief(j) for j in out["jobs"] if role_fit(state["role"], j.get("title", ""))][:MAX_FOUND]
+            found += [_job_brief(j) for j in out["jobs"] if role_fit(state["role"], j.get("title", ""))
+                      and location_fits(state.get("location", ""), j.get("location", ""))][:MAX_FOUND]
             errors += out["errors"]
         except tools.ToolError as e:
             errors.append(f"{p['source']}: {e}")
@@ -145,7 +146,8 @@ def scout_filter(state, config):
     seen, keep = set(), []
     for j in [*state.get("jobs", []), *state.get("found", [])]:  # earlier rounds' jobs, then this round's
         key = re.sub(r"[^a-z0-9]", "", f"{j.get('company', '')}|{j.get('title', '')}".lower())
-        if j["id"] in seen or key in seen or not role_fit(state["role"], j.get("title", "")):
+        if j["id"] in seen or key in seen or not role_fit(state["role"], j.get("title", "")) \
+                or not location_fits(state.get("location", ""), j.get("location", "")):
             continue
         seen.update((j["id"], key))
         keep.append(j)
@@ -583,9 +585,11 @@ def build_orchestrator():
 def register():
     """Register the three agents (done at import; tests call it again after clearing the registry)."""
     runtime.register_agent(runtime.Agent(
-        "job_scout", "2", "scout-2", frozenset({"jobs.search", "jobs.liveness"}), build_scout, max_steps=20,
-        description="Finds open jobs that fit the role across public sources; refines the search when too few turn up.",
-        instructions="plan sources and role phrasings; refine once if fewer than ENOUGH plausible jobs; keep live ones"))
+        "job_scout", "3", "scout-3", frozenset({"jobs.search", "jobs.liveness"}), build_scout, max_steps=20,
+        description="Finds open jobs that fit the role and the place asked for across public sources; refines the search "
+                    "when too few turn up.",
+        instructions="plan sources and role phrasings; keep only jobs in the asked place (or remote without another "
+                     "country); refine once if fewer than ENOUGH plausible jobs; keep live ones"))
     runtime.register_agent(runtime.Agent(
         "job_analyst", "2", "analyst-2", frozenset({"jobs.rank"}), build_analyst, max_steps=10,
         description="Ranks jobs against the resume and gives a reasoned shortlist.",

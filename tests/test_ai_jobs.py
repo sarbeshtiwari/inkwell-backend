@@ -284,3 +284,12 @@ def test_status_survives_a_job_description_stored_as_a_dict(user):
         ws.save("ai_jds", {"j1": {"text": "Python, 3+ years"}})
     assert user["client"].get("/api/ai-jobs").status_code == 200
     assert AI.years_asked({"x": 1}) is None and AI.years_asked("needs 3+ years") is not None
+
+
+def test_location_fits_keeps_the_asked_place_and_placeless_remote():
+    from features.ai_jobs.ranking import location_fits
+    assert location_fits("India", "Hybrid in Bangalore, India") and location_fits("India", "Bengaluru")
+    assert location_fits("India", "Remote") and location_fits("India", "") and location_fits("", "Toronto")
+    assert not location_fits("India", "Remote, Canada; Remote, Poland; Remote, United Kingdom")
+    assert not location_fits("India", "Toronto") and not location_fits("India", "Remote, United Kingdom")
+    assert location_fits("Pune", "Pune, Maharashtra") and location_fits("Bangalore", "Hyderabad, India")

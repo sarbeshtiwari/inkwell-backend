@@ -9,6 +9,22 @@ import requests
 from features.ai_jobs.common import J
 from features.ai_jobs import siteapply
 
+ANYWHERE = re.compile(r"\b(remote|anywhere|worldwide|global|work from home|wfh)\b", re.I)
+
+
+def location_fits(wanted, where):
+    """Whether a job's location suits the place the user asked for. No place asked, or a job that doesn't say where:
+    kept. Otherwise the job must name that place or a city/country in it, or be remote without naming another country
+    ("Remote" yes, "Remote, Canada" no when India was asked)."""
+    from features.ai_jobs.boards import countries_for
+    wanted, where = (wanted or "").strip().lower(), (where or "").strip().lower()
+    if not wanted or not where or wanted in where:
+        return True
+    want, there = countries_for(wanted), countries_for(where)
+    if want & there:
+        return True
+    return bool(ANYWHERE.search(where)) and not there
+
 
 STOP = set("a an and are as at be by for from has have in is it of on or our that the this to we will with you your "
            "who what work working team teams role job about across able experience years year using use".split())
@@ -106,9 +122,8 @@ def rank(profile, jobs):
             role, gaps = role // 2, gaps + ["Senior title"]
         elif re.search(r"\b(intern|internship|graduate|fresher|new grad)\b", title, re.I) and years >= 2:
             role, gaps = role // 3, gaps + ["Entry-level role"]
-        where = j.get("location", "").lower()
-        if loc and not (loc in where or "remote" in where or not where):
-            sim = max(sim - 6, 0); gaps.append(f"Based in {j['location']}")
+        if loc and not location_fits(loc, j.get("location", "")):
+            sim, role = 0, role // 2; gaps.append(f"Based in {j['location']}")
         bonus = 5 if profile.get("company") and profile["company"].lower()[:5] in j["company"].lower() else 0
         age = (datetime.now() - datetime.fromisoformat(j["posted"])).days if re.fullmatch(r"\d{4}-\d{2}-\d{2}", j.get("posted") or "") else None
         if age is not None and age > 120:
