@@ -360,3 +360,16 @@ def test_submit_rechecks_eligibility_after_approval(applying):
     out = submit_application(ctx, {"id": "gh:a:1", "title": "Dev", "company": "A", "url": "https://boards.greenhouse.io/a/jobs/1",
                                    "ats": "greenhouse"})
     assert out["state"] == "skipped" and "phone" in out["detail"] and applying["submitted"] == []
+
+
+def test_huge_board_results_keep_the_agent_state_small(world):
+    """Production: a board returned so many full postings that the Scout's checkpoint passed MongoDB's 16 MB limit."""
+    uid = world["uid"]
+    world["board"] = [job(i, "Backend Engineer" if i % 3 else "Sales Rep", f"Co{i}", "Python Django " + "x" * 20000)
+                      for i in range(3000)]
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "prepare": False})
+    run_all()
+    assert tasks.get(uid, tid)["status"] == "done"
+    import bson
+    biggest = max(len(bson.encode(d)) for d in A.M.checkpoints.find({"uid": uid}))
+    assert biggest < 4_000_000

@@ -38,6 +38,7 @@ MAX_ROUNDS = 2          # Scout: search, then at most one refinement
 ENOUGH = 8              # Scout: plausible jobs that count as enough
 LIVENESS_CHECKS = 12    # Scout: top candidates checked for still being open
 MAX_JOBS = 60           # Scout: jobs passed on to the Analyst
+MAX_FOUND = 300         # Scout: plausible jobs kept per round (as briefs) while searching
 REVIEW_TOP = 5          # Analyst: jobs the model reviews
 TEXT_CAP = 4000         # characters of each posting passed between agents
 SEARCHABLE = ("career_sites", "remote_boards", "tavily", "brave")
@@ -81,7 +82,9 @@ class ScoutState(TypedDict, total=False):
     company: str
     plan: list           # every search tried so far: [{"source", "role", "round"}]
     round: int
-    found: Annotated[list, operator.add]
+    found: list          # this round's search results only (briefs, text capped): replaced each round, so the
+                         # agent's saved state stays small however many jobs the boards return
+    considered: int
     errors: Annotated[list, operator.add]
     jobs: list
     notes: Annotated[list, operator.add]
@@ -124,27 +127,30 @@ def scout_search(state, config):
     c = runtime.ctx(config)
     plan = [p for p in state["plan"] if p.get("round") == state.get("round", 1)]  # only this round's new searches
     found, errors = [], []
+    total = 0
     for p in plan:
         runtime.checkpoint(config)
         try:
             out = tools.call(c, "jobs.search", {"role": p["role"], "sources": [p["source"]],
                                                  "location": state.get("location", ""), "company": state.get("company", "")})
-            found += out["jobs"]
+            total += len(out["jobs"])
+            # keep only plausible jobs, as short briefs: boards can return thousands of full postings
+            found += [_job_brief(j) for j in out["jobs"] if role_fit(state["role"], j.get("title", ""))][:MAX_FOUND]
             errors += out["errors"]
         except tools.ToolError as e:
             errors.append(f"{p['source']}: {e}")
-    return {"found": found, "errors": errors}
+    return {"found": found[:MAX_FOUND], "errors": errors, "considered": state.get("considered", 0) + total}
 
 
 def scout_filter(state, config):
     seen, keep = set(), []
-    for j in state.get("found", []):
+    for j in [*state.get("jobs", []), *state.get("found", [])]:  # earlier rounds' jobs, then this round's
         key = re.sub(r"[^a-z0-9]", "", f"{j.get('company', '')}|{j.get('title', '')}".lower())
         if j["id"] in seen or key in seen or not role_fit(state["role"], j.get("title", "")):
             continue
         seen.update((j["id"], key))
         keep.append(j)
-    return {"jobs": keep}
+    return {"jobs": keep[:MAX_FOUND], "found": []}
 
 
 def scout_next(state):
@@ -556,7 +562,7 @@ def orch_save(state, config):
     tools.call(runtime.ctx(config), "matches.save", {
         "want": want, "sources": cr.get("sources") or ["career_sites"], "results": ranked[:100], "jds": jds,
         "errors": [str(e)[:300] for e in (scout.get("result") or {}).get("errors", [])][:50], "engine": engine,
-        "considered": len((scout.get("result") or {}).get("found", []) or (scout.get("result") or {}).get("jobs", [])),
+        "considered": int((scout.get("result") or {}).get("considered") or len((scout.get("result") or {}).get("jobs", []))),
         "error": error})
     return {"notes": [f"Saved {len(ranked)} matches" if not error else f"Match failed: {error}"]}
 
