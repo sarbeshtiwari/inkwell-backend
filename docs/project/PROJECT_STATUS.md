@@ -82,7 +82,7 @@ documentation. · **Last reviewed:** 2026-11-26
 | D-06 | BYOK timing (approved as "later") | Product owner | — |
 | D-07 | Move existing auto-apply from standing consent to per-action approval? | Product owner | — |
 | D-08 | Retention periods for traces, usage, approvals, memory, checkpoints | Product owner | PH1-03, PH4-01 |
-| D-09 | **Answered 2026-11-27: "agent is priority"** (agent workflow is the main path; comparison with the existing pipeline informational). **Needs confirmation:** it conflicts with approved requirement 8 (no configuration production-active without evaluation and explicit approval) | Product owner | PH2-07, PH4-02 |
+| D-09 | **Decided 2026-11-27 (option b):** agent is priority, no evaluation gate; new agent and model versions are used as soon as they exist. Approved requirement 8 is **withdrawn** by the product owner | — | — |
 | D-10 | Keep or remove `roles` rows on account deletion | Product owner | — |
 | D-11 | When to add the separate worker service | Product owner | Hosting agents |
 | D-12 | **Decided 2026-11-27:** each user switches their own account off / shadow / on | — | — |

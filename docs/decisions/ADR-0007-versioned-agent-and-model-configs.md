@@ -1,6 +1,6 @@
 # ADR-0007: Versioned agent and model configurations, evaluated before promotion
 
-- **Status:** Approved (product owner, 2026-11-25)
+- **Status:** Approved (product owner, 2026-11-25); **amended 2026-11-27:** the promotion gate (requirement 8) is withdrawn. Versions are still recorded on every run (requirement 1 stands); new versions are used as soon as they exist, with no evaluation or approval step.
 - **Date:** 2026-11-25
 - **Implemented:** No
 
