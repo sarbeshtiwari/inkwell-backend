@@ -77,6 +77,7 @@ from features.learning.common import bp as learning_bp  # noqa: E402
 from features.research.company import bp as research_bp  # noqa: E402
 from features import agent_communicator as _agent_communicator  # noqa: E402,F401  (registers the Communicator)
 from features import agent_inbox as _agent_inbox  # noqa: E402,F401  (registers the Inbox agent)
+from features import agent_outreach as _agent_outreach  # noqa: E402,F401  (registers the Outreach agent)
 
 bridge.setup(sys.modules[__name__])
 feature_notify.init()

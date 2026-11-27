@@ -40,7 +40,7 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
             # the only tool that acts outside Inkwell is application submission, and it is approval-gated
             # the only tool that acts outside Inkwell is application submission (approval-gated); the Supervisor's
             # control tools change only Inkwell's own agent state
-            expected = "external_action" if t["id"] in ("applications.submit", "replies.send") else \
+            expected = "external_action" if t["id"] in ("applications.submit", "replies.send", "outreach.send_campaign") else \
                 "write_internal" if t["id"] in ("supervision.pause_agent", "supervision.cancel_task", "supervision.alert",
                                                 "replies.set_state", "inbox.sync", "inbox.summarise") else "read"
             assert t["risk"] == expected
