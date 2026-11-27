@@ -583,7 +583,7 @@ def build_orchestrator():
 def register():
     """Register the three agents (done at import; tests call it again after clearing the registry)."""
     runtime.register_agent(runtime.Agent(
-        "job_scout", "1", "scout-1", frozenset({"jobs.search", "jobs.liveness"}), build_scout, max_steps=20,
+        "job_scout", "2", "scout-2", frozenset({"jobs.search", "jobs.liveness"}), build_scout, max_steps=20,
         description="Finds open jobs that fit the role across public sources; refines the search when too few turn up.",
         instructions="plan sources and role phrasings; refine once if fewer than ENOUGH plausible jobs; keep live ones"))
     runtime.register_agent(runtime.Agent(
