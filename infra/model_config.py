@@ -1,4 +1,4 @@
-"""The service-wide model for agents, chosen by the Super Admin (product decision D-05, 2026-11-27).
+"""The service-wide model, chosen by the Super Admin (product decision D-05, 2026-11-27).
 
 One document in `model_configs` (`_id` "global"): provider, model, a version number that goes up on every change,
 who changed it and when. Changing it needs `admin.manage_models` and is written to the audit log first.
@@ -6,9 +6,9 @@ who changed it and when. Changing it needs `admin.manage_models` and is written 
 - **Keys** for the platform providers come only from the server's environment (PLATFORM_ANTHROPIC_KEY,
   PLATFORM_OPENAI_KEY): never stored in MongoDB, never returned by any API, never given to agents. A provider whose
   key isn't set can't be chosen.
-- **Use.** for_agents(uid) returns the gateway config for agent calls: the platform model (billed "platform", so the
-  Super Admin's budgets apply) when one is set and its key exists; otherwise None, and agents use the user's own
-  model settings exactly as before.
+- **Use.** for_agents(uid) returns the gateway config for every model call (agents and features alike, through
+  features.ai_jobs.models.config): the platform model, billed "platform" so the Super Admin's budgets apply, when one
+  is set and its key exists; otherwise None, and nothing uses a model.
 - Every agent call on the platform model records the config version in its usage record."""
 
 import os
@@ -46,7 +46,7 @@ def status():
 
 
 def set_model(actor_uid, provider, model, reason=""):
-    """Choose the agents' model (or provider None to go back to each user's own model). Audited before it applies."""
+    """Choose the platform model (or provider None for no model at all). Audited before it applies."""
     rbac.check(actor_uid, "admin.manage_models", target="model_config:global")
     reason = str(reason or "").strip()[:300]
     if len(reason) < 5:
@@ -71,7 +71,7 @@ def set_model(actor_uid, provider, model, reason=""):
 
 
 def for_agents(uid):
-    """Gateway config for an agent call for `uid` on the platform model, or None (then the user's own model is used)."""
+    """Gateway config for a model call for `uid` on the platform model, or None when no model is set."""
     c = current()
     if not c or not c["key_configured"]:
         return None

@@ -6,9 +6,24 @@ from collections import Counter
 from datetime import datetime
 import requests
 
-from features.ai_jobs.common import J, OLLAMA_MODEL, OLLAMA_URL
+from features.ai_jobs.common import J
 from features.ai_jobs import siteapply
-from features.ai_jobs.sources import search_query
+
+ANYWHERE = re.compile(r"\b(remote|anywhere|worldwide|global|work from home|wfh)\b", re.I)
+
+
+def location_fits(wanted, where):
+    """Whether a job's location suits the place the user asked for. No place asked, or a job that doesn't say where:
+    kept. Otherwise the job must name that place or a city/country in it, or be remote without naming another country
+    ("Remote" yes, "Remote, Canada" no when India was asked)."""
+    from features.ai_jobs.boards import countries_for
+    wanted, where = (wanted or "").strip().lower(), (where or "").strip().lower()
+    if not wanted or not where or wanted in where:
+        return True
+    want, there = countries_for(wanted), countries_for(where)
+    if want & there:
+        return True
+    return bool(ANYWHERE.search(where)) and not there
 
 
 STOP = set("a an and are as at be by for from has have in is it of on or our that the this to we will with you your "
@@ -107,9 +122,8 @@ def rank(profile, jobs):
             role, gaps = role // 2, gaps + ["Senior title"]
         elif re.search(r"\b(intern|internship|graduate|fresher|new grad)\b", title, re.I) and years >= 2:
             role, gaps = role // 3, gaps + ["Entry-level role"]
-        where = j.get("location", "").lower()
-        if loc and not (loc in where or "remote" in where or not where):
-            sim = max(sim - 6, 0); gaps.append(f"Based in {j['location']}")
+        if loc and not location_fits(loc, j.get("location", "")):
+            sim, role = 0, role // 2; gaps.append(f"Based in {j['location']}")
         bonus = 5 if profile.get("company") and profile["company"].lower()[:5] in j["company"].lower() else 0
         age = (datetime.now() - datetime.fromisoformat(j["posted"])).days if re.fullmatch(r"\d{4}-\d{2}-\d{2}", j.get("posted") or "") else None
         if age is not None and age > 120:
@@ -119,16 +133,6 @@ def rank(profile, jobs):
                     "can_apply": bool(siteapply.mode(j)), "apply_mode": siteapply.mode(j), "summary": j["text"][:400]})
     out.sort(key=lambda x: -x["score"])
     return out
-
-
-def ollama_ready():
-    if not OLLAMA_URL:
-        return False
-    try:
-        tags = requests.get(OLLAMA_URL + "/api/tags", timeout=2).json().get("models", [])
-        return any(m.get("name", "").split(":")[0] == OLLAMA_MODEL.split(":")[0] for m in tags)
-    except (requests.RequestException, ValueError):
-        return False
 
 
 def search_sources(tools, sources, profile):
@@ -141,10 +145,8 @@ def search_sources(tools, sources, profile):
                 found += tools["career_sites"].invoke({"role": profile["role"], "company": profile.get("company", "")})
             elif src == "remote_boards":
                 found += tools["remote_boards"].invoke({"role": profile["role"]})
-            else:
-                found += tools[src].invoke({"query": search_query(profile)})
         except Exception as e:
-            errors.append(f"{ {'tavily': 'Tavily', 'brave': 'Brave', 'remote_boards': 'Job boards'}.get(src, 'Career sites') }: {str(e)[:120]}")
+            errors.append(f"{'Job boards' if src == 'remote_boards' else 'Career sites'}: {str(e)[:120]}")
     uniq, same = {}, {}
     for j in sorted(found, key=lambda j: j["ats"] not in ("greenhouse", "lever", "ashby")):  # the same job on several sources: keep the appliable one
         key = re.sub(r"[^a-z0-9]", "", f"{j.get('company', '')}|{j['title']}".lower())

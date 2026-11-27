@@ -27,7 +27,6 @@ PERMISSIONS = {
     "admin.read_metadata": "See platform metadata: agent and task status, timings, models, token use and costs, errors",
     "admin.site_leads": "Read and manage enquiries sent to Inkwell's own website",
     "admin.integrations": "Configure platform-wide integrations (e.g. the LinkedIn app)",
-    "admin.update_app": "Update the app from its git folders (own computer only)",
     "admin.control_agents": "Start, stop, pause and kill-switch agents",
     "admin.manage_models": "Register, approve, promote and roll back models and model configurations",
     "admin.manage_budgets": "Set usage budgets and limits",

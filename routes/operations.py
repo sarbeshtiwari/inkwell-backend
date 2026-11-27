@@ -190,7 +190,7 @@ def admin_model(ws):
 @app.put("/api/admin/model")
 @login_required
 def admin_model_set(ws):
-    """Super Admin: {provider: "anthropic"|"openai"|null, model, reason}. null goes back to each user's own model.
+    """Super Admin: {provider: "anthropic"|"openai"|null, model, reason}. null turns the model off.
     Audited first."""
     from infra import model_config
     p = body()

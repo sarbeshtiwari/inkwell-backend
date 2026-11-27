@@ -63,12 +63,13 @@ def test_only_a_super_admin_sets_it_only_with_a_server_key_and_it_is_audited(adm
     assert client_for(u).get("/api/admin/model").status_code == 403
 
 
-def test_agents_use_the_platform_model_and_the_rest_of_the_app_keeps_the_users_own(admin, monkeypatch, anthropic):
-    monkeypatch.setenv("PLATFORM_ANTHROPIC_KEY", KEY)
-    model_config.set_model(admin["uid"], "anthropic", "claude-sonnet-5-5", "start with Sonnet")
+def test_the_platform_model_is_the_only_model_and_clearing_it_turns_ai_off(admin, monkeypatch, anthropic):
     uid, _ = make_user()
     ws = A.Workspace(uid)
-    assert models.config(ws) is None                       # outside agents: the user's own setting (none here)
+    assert models.config(ws) is None                       # nothing set yet: no model anywhere
+    monkeypatch.setenv("PLATFORM_ANTHROPIC_KEY", KEY)
+    model_config.set_model(admin["uid"], "anthropic", "claude-sonnet-5-5", "start with Sonnet")
+    assert models.config(ws)["billing"] == "platform"      # outside agents too
     with gateway.context(agent_id="job_analyst"):
         cfg = models.config(ws)
         assert cfg["billing"] == "platform" and cfg["model"] == "claude-sonnet-5-5"
@@ -77,9 +78,8 @@ def test_agents_use_the_platform_model_and_the_rest_of_the_app_keeps_the_users_o
     u = A.M.model_usage.find_one({"uid": uid})
     assert (u["billing"], u["model_config_version"], u["model_id"], u["agent_id"]) == ("platform", "1", "claude-x-2026-11-01", "job_analyst")
     assert KEY not in repr(u)
-    model_config.set_model(admin["uid"], None, None, "back to users' own models")
-    with gateway.context(agent_id="job_analyst"):
-        assert models.config(ws) is None                   # cleared: agents fall back to the user's own model
+    model_config.set_model(admin["uid"], None, None, "turn the model off")
+    assert models.config(ws) is None                       # cleared: no model anywhere
 
 
 def test_per_user_default_budget_applies_to_each_user_separately(admin, monkeypatch, anthropic):

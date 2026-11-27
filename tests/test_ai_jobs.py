@@ -53,43 +53,18 @@ def test_senior_roles_are_flagged_for_junior_profiles():
     assert "Very senior title" in r["gaps"] and r["score"] < 50
 
 
-@pytest.mark.parametrize("url,ok", [("https://jobs.lever.co/acme/" + "a" * 8 + "-" + "b" * 4 + "-" + "c" * 4 + "-" + "d" * 4 + "-" + "e" * 12, True),
-                                    ("https://job-boards.greenhouse.io/acme/jobs/123456", True),
-                                    ("https://jobs.ashbyhq.com/acme/" + "0" * 8 + "-0000-0000-0000-" + "0" * 12, True),
-                                    ("https://www.linkedin.com/jobs/view/123", False), ("https://evil.example/jobs.lever.co/x", False)])
-def test_only_supported_application_sites_are_recognised(url, ok):
-    assert bool(AI.ATS_URL.match(url)) is ok
-
-
 def test_pipeline_with_career_sites(monkeypatch):
     patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: JOBS if board == "acme" else [])
     patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
-    jobs, errors = AI.search_sources(AI.make_tools({}), ["career_sites"], PROFILE)
+    jobs, errors = AI.search_sources(AI.make_tools(), ["career_sites"], PROFILE)
     ranked = AI.rank(PROFILE, jobs)
     assert errors == [] and len(jobs) == 4 and ranked[0]["title"] == "Full Stack Engineer"
 
 
-def test_web_search_results_are_read_from_their_job_board(monkeypatch):
-    patch_shared(monkeypatch, "from_ats_url", src=AI, value=lambda u: JOBS[0] if "lever" in u else None)
-    out = AI.web_hits_to_jobs([{"url": "https://jobs.lever.co/acme/x"}, {"url": "https://careers.other.example/job/1", "title": "Dev"}])
-    assert out[0]["ats"] == "lever" and out[1]["ats"] == "" and out[1]["url"].startswith("https://careers.other")
-
-
-def test_keys_are_stored_but_never_sent_back(user):
-    c = user["client"]
-    r = c.put("/api/ai-jobs/keys", json={"tavily": "tvly-abcdefghijklmnop"}, headers=H).get_json()
-    assert r == {"tavily": True, "brave": False}
-    assert "tvly-" not in c.get("/api/ai-jobs").get_data(as_text=True)
-    assert c.put("/api/ai-jobs/keys", json={"brave": "<script>"}, headers=H).status_code == 400
-
-
-def test_search_needs_a_resume_and_a_key_for_web_sources(user):
+def test_search_needs_a_resume(user):
     c = user["client"]
     r = c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2}, headers=H)
     assert r.status_code == 400 and r.get_json()["field"] == "resume"
-    user["ws"].save_doc("resume.pdf", b"%PDF-1.4 x")
-    r = c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "sources": ["brave"]}, headers=H)
-    assert r.status_code == 400 and r.get_json()["field"] == "sources"
 
 
 def test_full_run_from_the_api(user, monkeypatch):
@@ -309,3 +284,12 @@ def test_status_survives_a_job_description_stored_as_a_dict(user):
         ws.save("ai_jds", {"j1": {"text": "Python, 3+ years"}})
     assert user["client"].get("/api/ai-jobs").status_code == 200
     assert AI.years_asked({"x": 1}) is None and AI.years_asked("needs 3+ years") is not None
+
+
+def test_location_fits_keeps_the_asked_place_and_placeless_remote():
+    from features.ai_jobs.ranking import location_fits
+    assert location_fits("India", "Hybrid in Bangalore, India") and location_fits("India", "Bengaluru")
+    assert location_fits("India", "Remote") and location_fits("India", "") and location_fits("", "Toronto")
+    assert not location_fits("India", "Remote, Canada; Remote, Poland; Remote, United Kingdom")
+    assert not location_fits("India", "Toronto") and not location_fits("India", "Remote, United Kingdom")
+    assert location_fits("Pune", "Pune, Maharashtra") and location_fits("Bangalore", "Hyderabad, India")

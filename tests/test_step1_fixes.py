@@ -231,17 +231,6 @@ def test_inbox_sync_stores_redacted_error(user, monkeypatch):
     assert "Sync failed" in saved and "hunter2pass" not in saved and "sk-ant-api03" not in saved
 
 
-# ---- 6. update progress permission -------------------------------------------------------------------------------
-
-def test_update_progress_requires_admin(user, monkeypatch):
-    assert user["client"].get("/api/update/progress", headers=H).status_code == 403
-    uid, email = make_user()
-    monkeypatch.setattr(rbac, "ADMIN_EMAILS", {email})
-    rbac.reconcile()
-    r = client_for(uid).get("/api/update/progress", headers=H)
-    assert r.status_code == 200 and "job" in r.get_json()
-
-
 # ---- crash recovery: a writer killed (SIGKILL) part-way through a write -------------------------------------------
 
 CRASHER = """

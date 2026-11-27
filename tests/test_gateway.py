@@ -140,37 +140,18 @@ def test_timeouts_network_failures_and_bad_json_are_recorded(monkeypatch, fake):
     assert sorted(r["error_class"] for r in records(uid)) == ["invalid_output", "network", "timeout"]
 
 
-def test_cli_and_local_providers_are_billed_local_and_cli_retries_json_once(monkeypatch):
-    uid, _ = make_user()
-    answers = ["not json", '{"a": 1}']
-    calls = []
-
-    def run(pid, prompt, web=False, timeout=90, model=""):
-        calls.append((pid, web, timeout))
-        return answers.pop(0)
-    monkeypatch.setattr(models.cli_llm, "run", run)
-    out = models.chat({"provider": "claude_cli", "model": "", "local": True, "uid": uid, "label": "x"}, "s", "h", as_json=True, web=True, timeout=7)
-    assert out == {"a": 1} and calls == [("claude_cli", True, 7), ("claude_cli", True, 7)]
-    [r] = records(uid)
-    assert r["billing"] == "local" and r["model_id"] is None and r["status"] == "ok"
-
-    def quota(*a, **k):
-        raise models.cli_llm.QuotaError("Your Claude Code / Kiro plan has reached its usage limit. Try again later.")
-    monkeypatch.setattr(models.cli_llm, "run", quota)
-    with pytest.raises(RuntimeError, match="usage limit") as e:
-        models.chat({"provider": "kiro_cli", "model": "", "local": True, "uid": uid, "label": "x"}, "s", "h")
-    assert e.value.error_class == "quota"
-
-
 def test_config_carries_the_users_id_so_usage_is_scoped(user, monkeypatch, fake):
-    c, ws = user["client"], user["ws"]
-    c.put("/api/ai-jobs/model", json={"provider": "groq", "model": "llama-x", "key": "gsk_" + "a" * 30}, headers={"X-Requested-With": "fetch"})
+    from infra import model_config
+    ws = user["ws"]
+    monkeypatch.setattr(model_config, "for_agents", lambda uid: {"provider": "openai", "model": "gpt-x", "key": "k",
+                                                                "base": "https://api.openai.com/v1", "uid": uid,
+                                                                "billing": "platform", "label": "x"})
     cfg = models.config(ws)
     assert cfg["uid"] == ws.uid
-    monkeypatch.setattr(requests, "post", lambda url, **kw: Resp({"model": "llama-x-real", "choices": [{"message": {"content": "ok"}}]}))
+    monkeypatch.setattr(requests, "post", lambda url, **kw: Resp({"model": "gpt-x-real", "choices": [{"message": {"content": "ok"}}]}))
     models.chat(cfg, "s", "h")
     other, _ = make_user()
-    assert [r["model_id"] for r in records(ws.uid)] == ["llama-x-real"]
+    assert [r["model_id"] for r in records(ws.uid)] == ["gpt-x-real"]
     assert records(other) == [] and gateway.usage(other) == []
     assert gateway.totals(ws.uid)["calls"] == 1 and gateway.totals(other)["calls"] == 0
 

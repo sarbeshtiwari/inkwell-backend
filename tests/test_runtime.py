@@ -41,7 +41,7 @@ def two_step_agent(crash_once=None, steps=25, agent_id="test_agent"):
     def first(state, config):
         CALLS.append("first")
         runtime.checkpoint(config)
-        rules = tools.call(runtime.ctx(config), "rules.read")
+        rules = tools.call(runtime.ctx(config), "testing.notes")
         return {"log": [f"first saw {state['goal']}"], "rules": rules}
 
     def second(state, config):
@@ -59,7 +59,7 @@ def two_step_agent(crash_once=None, steps=25, agent_id="test_agent"):
         g.add_edge("first", "second")
         g.add_edge("second", END)
         return g
-    return runtime.register_agent(runtime.Agent(agent_id, "1", "i1", frozenset({"rules.read"}), build, max_steps=steps))
+    return runtime.register_agent(runtime.Agent(agent_id, "1", "i1", frozenset({"testing.notes"}), build, max_steps=steps))
 
 
 def run_all(lease=5):
@@ -74,7 +74,7 @@ def test_agent_runs_as_a_task_with_tools_scoped_to_its_owner():
     uid, _ = make_user()
     ws = A.Workspace(uid)
     with ws.lock:
-        ws.save("ai_rules", {"blacklist": ["only-this-user"]})
+        ws.save("test_notes", {"blacklist": ["only-this-user"]})
     two_step_agent()
     tid = runtime.start(uid, "test_agent", {"goal": "find roles", "log": []})
     assert run_all() == [(tid, "done")]

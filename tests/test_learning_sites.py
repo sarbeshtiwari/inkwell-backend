@@ -1,58 +1,6 @@
-"""Learning from feedback, jobs read from a company's own careers site, and applying there."""
+"""Jobs read from a company's own careers site, and applying there."""
 
-from conftest import H
-
-from features.ai_jobs import learning, siteapply, sitejobs
-
-BASE = {"ats": "", "board": "x", "location": "Remote", "url": "https://acme.com/careers/1", "posted": "", "reasons": [], "gaps": [],
-        "summary": "Build React and Node.js services. Python is a plus.", "score": 60}
-
-
-def job(i, title, company="Acme"):
-    return {**BASE, "id": f"t:{i}", "title": title, "company": company}
-
-
-def test_feedback_moves_rankings_and_suggests_rules(user):
-    c, ws = user["client"], user["ws"]
-    good = [job(i, "Frontend Engineer (React)") for i in range(3)]
-    bad = [job(10 + i, "Sales Executive", "Globex") for i in range(3)]
-    with ws.lock:
-        ws.save("ai_match", {"results": good + bad, "want": {"years": 3}})
-    for j in good:
-        assert c.post(f"/api/ai-jobs/feedback/{j['id']}", json={"verdict": "good"}, headers=H).status_code == 200
-    for j in bad:
-        c.post(f"/api/ai-jobs/feedback/{j['id']}", json={"verdict": "bad", "reason": "company"}, headers=H)
-    m = learning.model(ws)
-    assert m["lessons"] == 6 and m["weights"]
-    ranked = learning.adjust([job(20, "React Frontend Developer"), job(21, "Sales Executive", "Globex")], m)
-    assert ranked[0]["id"] == "t:20" and ranked[0]["learned"] > 0 and ranked[1]["learned"] < 0
-    assert any("You liked jobs like this" in r for r in ranked[0]["reasons"])
-    # "Not for me" discards the job; the repeated reason becomes a suggestion that waits for approval
-    assert ws.load("ai_pipeline", {})["t:10"]["status"] == "discarded"
-    d = c.get("/api/ai-jobs/learning").get_json()
-    sug = next(s for s in d["suggestions"] if s["id"] == "bl:globex")
-    assert "Globex" not in (ws.load("ai_rules", {}) or {}).get("blacklist", [])
-    r = c.post(f"/api/ai-jobs/learning/suggestion/{sug['id']}", json={"accept": True}, headers=H).get_json()
-    assert "Globex" in r["rules"]["blacklist"]
-    assert not any(s["id"] == "bl:globex" for s in r["learning"]["suggestions"])
-    assert learning.prompt_hint(ws).startswith("From the candidate's own feedback")
-
-
-def test_outcomes_count_and_calibration_needs_enough_jobs(user):
-    c, ws = user["client"], user["ws"]
-    jobs = [job(i, "Backend Engineer") for i in range(4)]
-    for i, j in enumerate(jobs):
-        j["score"] = 85 if i < 2 else 40
-    with ws.lock:
-        ws.save("ai_match", {"results": jobs})
-    for j, st in zip(jobs, ["interview", "interview", "rejected", "rejected"]):
-        c.put(f"/api/ai-jobs/status/{j['id']}", json={"status": "applied"}, headers=H)
-        c.put(f"/api/ai-jobs/status/{j['id']}", json={"status": st}, headers=H)
-    assert learning.model(ws)["lessons"] == 4
-    cal = learning.calibration(ws, floor=2)
-    assert [(b["band"], b["rate"]) for b in cal["bands"]] == [("80+", 100), ("below 50", 0)]
-    assert learning.calibration(ws)["bands"][0]["rate"] is None  # below the default sample floor: counts only
-
+from features.ai_jobs import siteapply, sitejobs
 
 PAGE = """<html><body><script type="application/ld+json">{"@context": "https://schema.org", "@graph": [
  {"@type": "JobPosting", "title": "Platform Engineer", "identifier": {"value": "PE-7"}, "datePosted": "2026-10-30",
@@ -99,16 +47,6 @@ def test_site_memory(user):
     assert siteapply.memory(ws, "https://acme.com/x")["button"] == "Apply now"
     siteapply.remember(ws, "https://acme.com/jobs/3", "applied")
     assert not siteapply.known_account_site(ws, "https://acme.com/jobs/4")
-
-
-def test_past_applications_are_lessons(user):
-    ws = user["ws"]
-    jobs = [job(i, "Data Engineer") for i in range(3)]
-    with ws.lock:
-        ws.save("ai_match", {"results": jobs})
-        ws.save("ai_applied", {j["id"]: {"state": "applied", "at": 1790000000} for j in jobs})
-        ws.save("ai_pipeline", {jobs[0]["id"]: {"status": "evaluated", "at": "2026-10-01T10:00:00"}})
-    assert learning.model(ws)["lessons"] == 3 and learning.taste(ws)["likes"]
 
 
 def test_new_board_links_are_recognised():

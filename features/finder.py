@@ -14,7 +14,6 @@ import ipaddress
 import re
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
@@ -23,8 +22,6 @@ from flask import Blueprint, jsonify, request
 
 import bridge
 from bridge import login_required
-from infra import locks, operations
-from infra.redact import error_text
 
 bp = Blueprint("finder", __name__)
 
@@ -204,61 +201,6 @@ def scan_site(site, stop, pages_cap=MAX_PAGES):
     return out
 
 
-# ---------------------------------------------------------------- runs
-
-class Run:
-    """One finder run. Progress and results so far live in its shared operation record (results encrypted);
-    stopping is a cancellation request, seen by the scanners between pages."""
-
-    def __init__(self, op, uid, items):
-        self.op, self.uid, self.items = op, uid, items
-        self.stop = operations.CancelEvent(op)
-        self.results = []
-        self.done = 0
-        self.state = "running"
-        self.started = time.time()
-
-    def snapshot(self):
-        return {"state": self.state, "total": len(self.items), "done": self.done, "started": self.started,
-                "results": self.results}
-
-
-def run_scan(op, run):
-    ws = C().Workspace(run.uid)
-
-    def one(item):
-        if run.stop.is_set() or time.time() - run.started > RUN_SECONDS:
-            return {**item, "pages": 0, "emails": [], "other": 0, "error": "Skipped (stopped or time limit reached)."}
-        try:
-            return {**item, **scan_site(item["website"], run.stop)}
-        except Exception as e:  # one broken site never ends the whole run
-            print(f"[Inkwell] finder: {item['website']}: {e}", flush=True)
-            return {**item, "pages": 0, "emails": [], "other": 0, "error": "Couldn't read this website."}
-
-    try:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for res in pool.map(one, run.items):
-                res.pop("url", None)
-                run.results.append(res)
-                run.done += 1
-                op.update(public={"done": run.done}, private={"results": run.results})
-        run.state = "stopped" if run.stop.is_set() else "done"
-    except (operations.Cancelled, locks.LeaseLost):
-        raise
-    except Exception as e:
-        print(f"[Inkwell] finder run failed: {error_text(e, 200)}", flush=True)
-        run.state = "error"
-    with ws.lock:
-        ws.save("finder", run.snapshot())
-    if run.state == "stopped":
-        op.finish(operations.CANCELLED)
-    found = sum(len(r["emails"]) for r in run.results)
-    from features.notify import notify
-    notify(run.uid, f"Website finder: {found} hiring address{'es' if found != 1 else ''} found",
-                  f"Checked {run.done} website{'s' if run.done != 1 else ''}. Pick the ones to save as contacts.",
-                  "/app/finder", "info")
-
-
 SITE_HEADERS = {"website", "websites", "url", "urls", "site", "domain", "web", "link", "homepage", "company website", "career page", "careers page"}
 NAME_HEADERS = {"company", "company name", "name", "organisation", "organization", "employer"}
 
@@ -339,27 +281,36 @@ def start_scan(ws):
     core = C()
     items, bad = read_items(core)
     busy = "A search is already running. Wait for it to finish or stop it."
-    if operations.running(ws.uid, "finder"):
+    if finder_state(ws).get("state") == "running":
         raise core.Invalid(busy, status=409)
+    from infra import runtime
+    if runtime.user_mode(ws.uid) == "off":
+        raise core.Invalid("Agents are switched off for your account, and the email finder runs on agents. "
+                           "Turn them on in Approvals.", status=403)
     for _ in items:
         if core.rate_limited(("finder", ws.uid), SITES_PER_DAY, 86400):
             raise core.Invalid(f"You can check up to {SITES_PER_DAY} websites a day. Try again tomorrow.", status=429)
-    op = operations.start(ws.uid, "finder", public={"total": len(items), "done": 0}, private={"results": []}, busy=busy)
-    operations.spawn(op, run_scan, Run(op, ws.uid, items), name="finder")
+    # Started from this page, so its results are recorded whatever the switch; saving stays the user's choice here.
+    tid = runtime.start(ws.uid, "email_finder", {"items": items, "save": False}, mode="on")
+    with ws.lock:
+        ws.save("finder", {"state": "running", "total": len(items), "done": 0, "started": time.time(), "results": [],
+                           "task_id": tid})
     return jsonify(ok=True, total=len(items), skipped=bad)
 
 
 def finder_state(ws):
-    """The running search (shared record, so any process can answer) or the last saved one."""
-    v = operations.current(ws.uid, "finder")
-    saved = ws.load("finder", None)
-    if v and v["state"] == operations.RUNNING:
-        return {"state": "running", "total": v.get("total", 0), "done": v.get("done", 0), "started": v["started"],
-                "results": v.get("results", [])}
-    if v and v["state"] == operations.INTERRUPTED and (saved or {}).get("started", 0) < (v["started"] or 0):
-        return {"state": "error", "total": v.get("total", 0), "done": v.get("done", 0), "started": v["started"],
-                "results": v.get("results", [])}
-    return saved or {"state": "idle", "total": 0, "done": 0, "results": []}
+    """The running search (its agent task) or the last finished one."""
+    from infra import tasks
+    saved = ws.load("finder", None) or {"state": "idle", "total": 0, "done": 0, "results": []}
+    if saved.get("state") != "running" or not saved.get("task_id"):
+        return saved
+    t = tasks.get(ws.uid, saved["task_id"])
+    if t and t["status"] not in tasks.FINAL:
+        return saved
+    if t and t["status"] == "done":
+        return ws.load("finder", None) or saved
+    state = "stopped" if t and t["status"] == "cancelled" else "error"
+    return {**saved, "state": state, "error": str((t or {}).get("error") or "")[:300]}
 
 
 @bp.get("/api/finder")
@@ -376,7 +327,10 @@ def status(ws):
 @bp.post("/api/finder/stop")
 @login_required
 def stop(ws):
-    operations.cancel(ws.uid, "finder")
+    from infra import tasks
+    tid = (ws.load("finder", None) or {}).get("task_id")
+    if tid:
+        tasks.cancel(ws.uid, tid)
     return jsonify(ok=True)
 
 
@@ -390,6 +344,12 @@ def save_contacts(ws):
     list_name = core.v_text(p.get("list") or "Website finder", "list", "List", 60)
     if not isinstance(picks, list) or not picks:
         raise core.Invalid("Pick at least one address to save.")
+    return jsonify(save_found(ws, picks, list_name))
+
+
+def save_found(ws, picks, list_name="Website finder"):
+    """Save picked addresses as contacts (the Save button, and the Email Finder agent); existing emails skipped."""
+    core = C()
     added = duplicates = invalid = 0
     with ws.lock:
         rows = ws.load("recipients", [])
@@ -416,7 +376,7 @@ def save_contacts(ws):
             have.add(email)
             added += 1
         ws.save("recipients", rows)
-    return jsonify(added=added, duplicates=duplicates, invalid=invalid)
+    return {"added": added, "duplicates": duplicates, "invalid": invalid}
 
 
 @bp.get("/api/finder/sample")

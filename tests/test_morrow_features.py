@@ -1,57 +1,14 @@
-"""Features adapted from Morrow: Claude Code as the AI, the 90-day course and spaced review, the daily briefing,
+"""Features adapted from Morrow: the 90-day course and spaced review, the daily briefing,
 reorder-only resume tailoring, evidence-checked company research and the new job sources."""
 import datetime as dt
-import os
-import stat
 
 from conftest import H
 
-from features.ai_jobs import cli_llm, models, tailor_rules as R
+from features.ai_jobs import tailor_rules as R
 from features.ai_jobs.boards import cutshort, hackernews, hirist, wellfound, ycombinator
 from features.learning import briefing, course
 from features.learning.content import interview_review
 from features.research import company as research
-
-
-# --- Claude Code / Kiro -------------------------------------------------------------------------------------------
-
-def fake_tool(tmp_path, monkeypatch, out, code=0):
-    """A stand-in `claude` that prints `out`, so no real plan usage happens in tests."""
-    path = tmp_path / "claude"
-    path.write_text(f"#!/bin/sh\necho '{out}'\nexit {code}\n")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(cli_llm, "available", lambda pid: pid == "claude_cli")
-    monkeypatch.setattr(models, "local_allowed", lambda: True)
-
-
-def test_claude_code_is_the_default_ai_on_this_computer(user, tmp_path, monkeypatch):
-    fake_tool(tmp_path, monkeypatch, 'Sure: {"ok": true, "score": 4}')
-    cfg = models.config(user["ws"])
-    assert cfg["provider"] == "claude_cli"
-    assert models.chat(cfg, "sys", "q", as_json=True) == {"ok": True, "score": 4}
-    assert user["client"].get("/api/ai-jobs/model", headers=H).get_json()["cli"]["claude_cli"] is True
-
-
-def test_claude_code_falls_back_to_ollama_when_unavailable(user, monkeypatch):
-    monkeypatch.setattr(models, "local_allowed", lambda: False)  # e.g. the hosted service
-    user["ws"].save("ai_model", {"provider": "claude_cli"})
-    monkeypatch.setattr(models, "ollama_up", lambda: True)
-    assert models.config(user["ws"])["provider"] == "ollama"
-
-
-def test_plan_limit_is_reported_clearly(tmp_path, monkeypatch):
-    fake_tool(tmp_path, monkeypatch, "Claude usage limit reached", code=1)
-    try:
-        cli_llm.run("claude_cli", "hi")
-        raise AssertionError("should fail")
-    except cli_llm.QuotaError as e:
-        assert "usage limit" in str(e)
-
-
-def test_claude_code_command_has_no_tools_unless_research():
-    assert cli_llm.command("claude_cli", "p")[cli_llm.command("claude_cli", "p").index("--tools") + 1] == ""
-    assert "WebSearch,WebFetch" in cli_llm.command("claude_cli", "p", web=True)
 
 
 # --- course and spaced review --------------------------------------------------------------------------------------

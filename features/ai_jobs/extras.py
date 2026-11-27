@@ -1,6 +1,6 @@
 """More of career-ops' scripts, as features of AI job match:
 
-  tailored resume per job + fact check (cv tailoring, verify-cv-facts)   skills to learn (upskill)
+  tailored resume per job + fact check (cv tailoring, verify-cv-facts)   
   similar jobs you already looked at (jd-similarity)                    your history with the company (company-history)
   application deadlines (closing-soon)                                  close long-silent applications (close-stale)
   resume changed since an evaluation (reeval-candidates)                save a posting as PDF (archive-posting)
@@ -11,7 +11,6 @@ Everything written for you comes from your own resume; a model may reword, never
 import html
 import re
 import time
-from collections import Counter
 from datetime import datetime, timedelta
 
 from flask import jsonify, request
@@ -359,30 +358,6 @@ def job_context(ws, jid):
                    prep=(ws.load("ai_prep", {}) or {}).get(jid))
 
 
-# --- skills to learn ------------------------------------------------------------------------------------------
-
-def skills_to_learn(ws):
-    """Keywords the jobs you evaluated ask for and your resume lacks, most asked first — what's worth learning."""
-    reports = (ws.load("ai_reports", {}) or {}).values()
-    asked, missing, strong = Counter(), Counter(), Counter()
-    for r in reports:
-        for k in r["keywords"]["keywords"]:
-            asked[k] += 1
-        for k in r["keywords"]["missing"]:
-            missing[k] += 1
-            if r["score5"] >= 4:
-                strong[k] += 1
-    n = len(list((ws.load("ai_reports", {}) or {}).values()))
-    return {"evaluated": n, "skills": [{"skill": k, "missing_in": c, "share": round(100 * c / n) if n else 0, "in_good_fits": strong[k]}
-                                       for k, c in missing.most_common(15)],
-            "have": [k for k, _ in asked.most_common(30) if k not in missing][:12]}
-
-
-@bp.get("/api/ai-jobs/skills")
-@login_required
-def get_skills(ws):
-    return jsonify(skills_to_learn(ws))
-
 
 # --- close long-silent applications ---------------------------------------------------------------------------
 
@@ -501,7 +476,7 @@ def weekly_digest_all():
     """Mondays: one notification per user with the week's strong matches, follow-ups due and reply rate."""
     if datetime.now().weekday() != 0:
         return
-    from features.ai_jobs.tracker import due_followups, insights
+    from features.ai_jobs.tracker import applied_summary, due_followups
     from features.notify import notify
     week = datetime.now().strftime("%G-W%V")
     for u in C().M.users.find({}, {"_id": 1}):
@@ -511,7 +486,7 @@ def weekly_digest_all():
                 continue
             strong = sum(1 for r in ws.load("ai_match", {}).get("results", []) if r.get("score", 0) >= 70)
             due = sum(1 for f in due_followups(ws) if f["kind"] != "cold")
-            ins = insights(ws, 7)
+            ins = {"total": applied_summary(ws, 7)}
             from features.replies import hand_to_agent
             if hand_to_agent(ws.uid, "weekly_digest", {}, f"weekly-digest:{week}"):
                 continue  # agents on for this account: the Weekly Digest agent writes and sends it

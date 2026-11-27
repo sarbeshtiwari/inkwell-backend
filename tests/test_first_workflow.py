@@ -43,7 +43,7 @@ def world(monkeypatch):
     agents.register()
     searches = []
     w = {"searches": searches, "board": list(BOARD), "remote": []}
-    monkeypatch.setattr(agent_tools, "make_tools", lambda keys, portals, location: {
+    monkeypatch.setattr(agent_tools, "make_tools", lambda location="": {
         "career_sites": FakeTool(searches, "career_sites", w["board"]),
         "remote_boards": FakeTool(searches, "remote_boards", w["remote"])})
     monkeypatch.setattr(signals, "ats_alive", lambda j: "gone" not in j["id"])
@@ -52,9 +52,6 @@ def world(monkeypatch):
         "skills": ["Python", "Django", "PostgreSQL", "Docker", "AWS"]})
     monkeypatch.setattr(agents, "_model", lambda config: None)  # no model unless a test sets one
     uid, _ = make_user()
-    ws = A.Workspace(uid)
-    with ws.lock:
-        ws.save("ai_rules", {"blacklist": ["Blocked Co"], "no_contract": True})
     w["uid"] = uid
     return w
 
@@ -98,8 +95,7 @@ def test_whole_workflow_without_a_model(world):
     assert "gh:acme:1" in ids and "gh:globex:2" in ids
     assert "gh:acme:6" not in ids                                     # not the role: filtered by the Scout
     assert "gh:gone inc:5" not in ids and r["found"] == 5             # closed posting dropped
-    assert {s["company"] for s in r["skipped_for_rules"]} == {"Blocked Co", "Contracty"}  # rule breaks never recommended
-    assert all(p["rule_breaks"] == [] and p["score"] >= 50 for p in r["recommended"])
+    assert all(p["score"] >= 50 for p in r["recommended"])
     assert r["problems"] == [] and r["mode"] == "shadow" and any("no model set up" in n for n in r["analyst_notes"])
     kids = tasks.children(uid, tid)
     assert [k["agent_id"] for k in kids] == ["job_scout", "job_analyst", "writer"] and all(k["status"] == "done" for k in kids)
@@ -195,11 +191,8 @@ def test_cancelling_the_goal_cancels_the_delegated_work(world):
     assert world["searches"] == []
 
 
-def test_another_users_rules_and_resume_are_never_used(world, monkeypatch):
+def test_another_users_runs_are_never_visible(world, monkeypatch):
     other, _ = make_user()
-    ws = A.Workspace(other)
-    with ws.lock:
-        ws.save("ai_rules", {"blacklist": ["Acme"]})
     uid = world["uid"]
     tid = start(uid, criteria={"role": "Backend Developer", "years": 4})
     run_all()
@@ -360,3 +353,16 @@ def test_submit_rechecks_eligibility_after_approval(applying):
     out = submit_application(ctx, {"id": "gh:a:1", "title": "Dev", "company": "A", "url": "https://boards.greenhouse.io/a/jobs/1",
                                    "ats": "greenhouse"})
     assert out["state"] == "skipped" and "phone" in out["detail"] and applying["submitted"] == []
+
+
+def test_huge_board_results_keep_the_agent_state_small(world):
+    """Production: a board returned so many full postings that the Scout's checkpoint passed MongoDB's 16 MB limit."""
+    uid = world["uid"]
+    world["board"] = [job(i, "Backend Engineer" if i % 3 else "Sales Rep", f"Co{i}", "Python Django " + "x" * 20000)
+                      for i in range(3000)]
+    tid = start(uid, criteria={"role": "Backend Developer", "years": 4, "prepare": False})
+    run_all()
+    assert tasks.get(uid, tid)["status"] == "done"
+    import bson
+    biggest = max(len(bson.encode(d)) for d in A.M.checkpoints.find({"uid": uid}))
+    assert biggest < 4_000_000

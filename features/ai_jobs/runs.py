@@ -1,4 +1,4 @@
-"""Match runs: starting a search, its status, search keys and auto-apply details."""
+"""Match runs: starting a search, its status, and auto-apply details."""
 
 import re
 import time
@@ -7,11 +7,11 @@ from flask import jsonify
 from bridge import login_required
 
 from features.ai_jobs.apply import COVER_DOC, can_hand_over, cover_file
-from features.ai_jobs.common import APPLY_PER_DAY, C, HANDOVER, J, MAX_RESULTS, OLLAMA_MODEL, bp
+from features.ai_jobs.common import APPLY_PER_DAY, C, HANDOVER, J, MAX_RESULTS, bp
 from infra import operations
-from features.ai_jobs import learning, signals
-from features.ai_jobs.evaluate import get_rules, report_brief, stamp_seen
-from features.ai_jobs.tracker import STATES, due_followups, set_status
+from features.ai_jobs import signals
+from features.ai_jobs.evaluate import report_brief, stamp_seen
+from features.ai_jobs.tracker import STATES, due_followups
 
 
 def save_match(ws, want, sources, results, jds, errors, engine, considered, error=""):
@@ -29,7 +29,14 @@ def save_match(ws, want, sources, results, jds, errors, engine, considered, erro
     if error:
         run.update(state="error", stage="Error", error=error, results=prev.get("results", []) if prev.get("state") == "done" else [])
     else:
-        mark_rules(ws, results, jds)
+        for r in results:  # what the page shows per job, read from its description
+            jd = jds.get(r["id"], "")
+            try:
+                r["remote"] = signals.remote_mode(r, jd)
+                pay = signals.pay_range(r, jd)
+                r["pay"] = pay["text"] if pay else ""
+            except Exception:
+                pass
         with ws.lock:
             ws.save("ai_jds", {k: (v if isinstance(v, str) else "")[:12000] for k, v in jds.items() if k in {r["id"] for r in results}})
         stamp_seen(ws, results)
@@ -41,23 +48,6 @@ def save_match(ws, want, sources, results, jds, errors, engine, considered, erro
     notify(ws.uid, f"AI job match: {good} strong match{'es' if good != 1 else ''}" if not error else "AI job match stopped",
            f"For {want.get('role', '')}. Open the page to review them." if not error else error, "/app/ai-jobs", "info")
     return len(results)
-
-
-def mark_rules(ws, results, jds):
-    """Check each match against the user's own rules (blacklist and dealbreakers); a job that breaks one is marked Skip."""
-    rules = get_rules(ws)
-    for r in results:
-        jd = jds.get(r["id"], "")
-        try:
-            r["rules"] = signals.rule_hits(r, jd, rules)
-            r["remote"] = signals.remote_mode(r, jd)
-            pay = signals.pay_range(r, jd)
-            r["pay"] = pay["text"] if pay else ""
-        except Exception as e:  # one odd posting never spoils the whole run
-            print(f"[Inkwell] rules check skipped for {r.get('company')}: {e!r}", flush=True)
-            r.setdefault("rules", [])
-        if r["rules"]:
-            set_status(ws, r["id"], "skip", only_if_new=True, note=r["rules"][0]["rule"])
 
 
 MIN_RESUME_WORDS = 10  # fewer readable words than this: the PDF has no usable text layer (scan or image)
@@ -73,13 +63,6 @@ def pdf_text(ws, name):
         return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages)
     except Exception:
         raise C().Invalid("We couldn't read that PDF. Upload a text-based resume (not a scanned image).", "resume")
-
-
-def model_state(ws):
-    from features.ai_jobs import models
-    cfg = models.config(ws)
-    return {"local_model": bool(cfg), "model_name": cfg["label"] if cfg else OLLAMA_MODEL,
-            "model_provider": (ws.load("ai_model", {}) or {}).get("provider") or "ollama"}
 
 
 STAGES = {"job_scout": "Searching", "job_analyst": "Ranking matches"}
@@ -107,7 +90,6 @@ def match_state(ws):
 
 def public_state(ws):
     run = match_state(ws)
-    keys = ws.load("ai_keys", {})
     applied = ws.load("ai_applied", {})
     out = {k: v for k, v in run.items() if k != "thread"}
     reports, pipe = ws.load("ai_reports", {}) or {}, ws.load("ai_pipeline", {}) or {}
@@ -117,17 +99,13 @@ def public_state(ws):
         r["status"] = (pipe.get(r["id"]) or {}).get("status", "")
         if r["apply"] and r["apply"].get("state") == "applied" and r["status"] in ("", "evaluated"):
             r["status"] = "applied"
-    return out | {"keys": {"tavily": bool(keys.get("tavily")), "brave": bool(keys.get("brave"))}, **model_state(ws), "resumes": [d["name"] for d in ws.documents() if d["name"].lower().endswith(".pdf")],
+    return out | {"resumes": [d["name"] for d in ws.documents() if d["name"].lower().endswith(".pdf")],
                   "details": ws.load("ai_apply_profile", {}), "consent": bool(ws.settings().get("auto_apply_consent")),
                   "applying": operations.batch_view(ws.uid, "ai_apply"), "apply_per_day": APPLY_PER_DAY,
                   "can_hand_over": can_hand_over(), "handover": HANDOVER.get(ws.uid, ""),
                   "documents": [d["name"] for d in ws.documents() if COVER_DOC.search(d["name"])], "cover_letter": cover_file(ws)[0],
                   "evaluating": operations.batch_view(ws.uid, "ai_evaluate"), "statuses": {k: v[0] for k, v in STATES.items()},
-                  "rules": get_rules(ws), "followups_due": sum(1 for f in due_followups(ws) if f["kind"] != "cold"),
-            "feedback": {k: ("good" if "good" in v["signals"] else "bad") for k, v in (ws.load("ai_feedback", {}) or {}).items()
-                         if {"good", "bad"} & set(v.get("signals", {}))},
-            "learning": {"lessons": learning.model(ws)["lessons"], "needed": learning.MIN_LESSONS,
-                         "suggestions": len(learning.suggestions(ws))}}
+                  "followups_due": sum(1 for f in due_followups(ws) if f["kind"] != "cold"),}
 
 
 @bp.get("/api/ai-jobs")
@@ -150,11 +128,7 @@ def start(ws):
         raise core.Invalid("Pick a resume from your files.", "resume")
     if not want["resume"] and not any(d["name"].lower().endswith(".pdf") for d in ws.documents()):
         raise core.Invalid("Upload your resume as a PDF on the Files page first.", "resume")
-    sources = [s for s in (p.get("sources") or ["career_sites"]) if s in ("career_sites", "remote_boards", "tavily", "brave")] or ["career_sites"]
-    keys = ws.load("ai_keys", {})
-    for s in sources:
-        if s in ("tavily", "brave") and not keys.get(s):
-            raise core.Invalid(f"Add your {s.capitalize()} API key first, or untick it.", "sources")
+    sources = ["career_sites", "remote_boards"]  # every search uses all sources; the user doesn't choose
     cur = match_state(ws)
     if cur.get("state") == "running":
         raise core.Invalid("A search is already running.", status=409)
@@ -174,22 +148,6 @@ def start(ws):
         ws.save("ai_match", {**(ws.load("ai_match", {}) or {}), "state": "running", "stage": "Reading your resume",
                              "want": want, "sources": sources, "started": time.time(), "task_id": tid, "skills": []})
     return jsonify(ok=True)
-
-
-@bp.put("/api/ai-jobs/keys")
-@login_required
-def save_keys(ws):
-    p = C().body()
-    with ws.lock:
-        keys = ws.load("ai_keys", {})
-        for k in ("tavily", "brave"):
-            if k in p:
-                v = str(p[k] or "").strip()
-                if v and not re.fullmatch(r"[\w\-]{10,200}", v):
-                    raise C().Invalid("That doesn't look like an API key.", k)
-                keys[k] = v
-        ws.save("ai_keys", keys)
-    return jsonify(tavily=bool(keys.get("tavily")), brave=bool(keys.get("brave")))
 
 
 DETAIL_FIELDS = {"linkedin": "LinkedIn", "github": "GitHub", "portfolio": "Portfolio", "current_company": "Current company",

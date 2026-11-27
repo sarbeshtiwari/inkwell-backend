@@ -2,9 +2,8 @@
 industry, about, LinkedIn and size, each with the page it came from and a quote cut from that page.
 Adapted from Morrow (MIT, (c) 2026 Morrow contributors): common/company_research.py and common/company_store.py.
 
-With Claude Code / Kiro (Inkwell on your own computer) the AI searches the web, as in Morrow. Otherwise Inkwell
-reads the company's own site (home, about, careers, contact, team) and the configured AI picks facts from those
-pages. Either way every claim is re-checked against the real page (validate) and dropped if the page doesn't show
+Inkwell reads the company's own site (home, about, careers, contact, team) and the platform model (or, without one,
+the deterministic reader) picks facts from those pages. Every claim is re-checked against the real page (validate) and dropped if the page doesn't show
 it. Only public business information; never private details or guessed email patterns."""
 
 import hashlib
@@ -168,15 +167,12 @@ def site_pages(website):
 
 
 def research_text(ws, company):
-    """The raw research answer: Claude Code / Kiro with web search, else the configured AI reading the company's pages."""
+    """The raw research answer: the platform model reading the company's own pages (or the deterministic reader)."""
     from features.ai_jobs import models
     cfg = models.config(ws)
-    if cfg and cfg["provider"] in ("claude_cli", "kiro_cli"):
-        return models.chat(cfg, "You research employers for a job seeker. Answer only with the JSON object asked for.",
-                           prompt_for(company), as_json=True, web=True, timeout=900)
     pages = site_pages(company.get("website", ""))
     if not pages:
-        raise ValueError("Add the company's website so Inkwell can read its pages (web search needs Claude Code on your computer).")
+        raise ValueError("Add the company's website so Inkwell can read its pages.")
     if not cfg:
         return deterministic(company, pages)
     corpus = "\n\n".join(f"SOURCE {p['url']}\n{p['text'][:5000]}" for p in pages)
@@ -225,7 +221,7 @@ def run(op, uid, cid):
             ws.save("company_research", rows)
     except Exception as e:
         quota = "usage limit" in str(e).lower()
-        message = ("Your Claude Code / Kiro plan reached its usage limit. Try again later." if quota else
+        message = ("The AI model reached its usage limit. Try again later." if quota else
                    str(e)[:300] if isinstance(e, ValueError) else
                    "The research couldn't be verified. Retry this company; earlier findings were kept.")
         with ws.lock:

@@ -42,11 +42,9 @@ def test_regular_user_is_refused_on_every_admin_endpoint_and_denials_are_audited
     assert c.get("/api/leads?scope=site", headers=H).status_code == 403
     assert c.get("/api/leads/export?scope=site", headers=H).status_code == 403
     assert c.put("/api/li/config", json={"client_id": "abcdefgh12", "client_secret": "x" * 20}, headers=H).status_code == 403
-    from features import updater
-    monkeypatch.setattr(updater, "enabled", lambda: True)
-    assert c.get("/api/update", headers=H).status_code == 403
+    assert c.get("/api/admin/kill-switches", headers=H).status_code == 403
     denied = list(M.audit_log.find({"actor": user["uid"], "action": "access.denied"}))
-    assert {d["details"]["permission"] for d in denied} >= {"admin.site_leads", "admin.integrations", "admin.update_app"}
+    assert {d["details"]["permission"] for d in denied} >= {"admin.site_leads", "admin.integrations", "admin.control_agents"}
     assert all(d["outcome"] == "denied" and d["request_id"] for d in denied)
 
 
