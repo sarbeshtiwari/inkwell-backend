@@ -109,10 +109,12 @@ def admin_budgets(ws):
 @app.post("/api/admin/budgets")
 @login_required
 def admin_budget_set(ws):
-    """Super Admin: set a scope's limits ({agent_id} or {uid}, or neither for the whole service). Audited first."""
+    """Super Admin: set a scope's limits: {per_user: true} for every user's own daily/monthly limit, {agent_id},
+    {uid}, or none of these for the whole service together. Audited first."""
     from infra import budgets
     p = body()
     out = budgets.set_budget(ws.uid, agent_id=p.get("agent_id") or None, uid=p.get("uid") or None,
+                             per_user=bool(p.get("per_user")),
                              limits=p.get("limits") if isinstance(p.get("limits"), dict) else None,
                              applies_to=p.get("applies_to") or ["platform"], reason=p.get("reason"))
     return jsonify(ok=True, budget=out)
@@ -174,3 +176,22 @@ def admin_agent_trace(ws, trace_id):
     if not tr:
         raise Invalid("Unknown trace.", status=404)
     return jsonify(trace=tr)
+
+
+@app.get("/api/admin/model")
+@login_required
+@rbac.require_permission("admin.manage_models", message="Only a Super Admin can see the agents' model.")
+def admin_model(ws):
+    """The service-wide model for agents, and which platform providers have a key on the server (never the keys)."""
+    from infra import model_config
+    return jsonify(model_config.status())
+
+
+@app.put("/api/admin/model")
+@login_required
+def admin_model_set(ws):
+    """Super Admin: {provider: "anthropic"|"openai"|null, model, reason}. null goes back to each user's own model.
+    Audited first."""
+    from infra import model_config
+    p = body()
+    return jsonify(config=model_config.set_model(ws.uid, p.get("provider") or None, p.get("model"), p.get("reason")))

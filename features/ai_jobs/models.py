@@ -59,6 +59,11 @@ def default_provider():
 
 def config(ws):
     """The user's model settings, with the key, or None when no model is usable right now."""
+    if gateway.current_context().get("agent_id"):  # inside an agent run: the Super Admin's model, when one is set
+        from infra import model_config
+        platform = model_config.for_agents(ws.uid)
+        if platform:
+            return platform
     s = ws.load("ai_model", {}) or {}
     pid = s.get("provider") or default_provider()
     if pid in cli_llm.TOOLS:
@@ -102,6 +107,8 @@ first_json = gateway.first_json  # kept here: research and the CLI helper import
 
 
 def _billing(cfg):
+    if cfg.get("billing"):
+        return cfg["billing"]
     return gateway.LOCAL if cfg.get("local") or cfg["provider"] in ("ollama", "local", *cli_llm.TOOLS) else gateway.BYOK
 
 
@@ -111,6 +118,13 @@ def chat(cfg, system, human, as_json=False, max_tokens=700, temperature=0.2, web
 
     Goes through the model gateway (infra/gateway.py), which records the call's usage; errors are RuntimeErrors
     (gateway.GatewayError) with the same messages as before."""
+    if cfg.get("config_version"):  # the platform model: record which version of the setting answered
+        with gateway.context(model_config_version=cfg["config_version"]):
+            return _complete(cfg, system, human, as_json, max_tokens, temperature, web, timeout)
+    return _complete(cfg, system, human, as_json, max_tokens, temperature, web, timeout)
+
+
+def _complete(cfg, system, human, as_json, max_tokens, temperature, web, timeout):
     return gateway.complete(gateway.Request(
         provider=cfg["provider"], model=cfg.get("model", ""), system=system, human=human, uid=cfg.get("uid"),
         key=cfg.get("key", ""), base=OLLAMA_URL if cfg["provider"] == "ollama" else cfg.get("base", ""),

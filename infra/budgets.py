@@ -3,7 +3,8 @@
 Two kinds of limit:
 
 - **Scoped budgets** (`budgets` collection, set by a holder of `admin.manage_budgets`, audited first): one document per
-  scope — "global", "user:<uid>" or "agent:<agent_id>" — with any of `daily_tokens`, `monthly_tokens`, `daily_cost`,
+  scope — "global" (the whole service together), "user_default" (every user, each on their own spend; set once by
+  the Super Admin, product decision D-05), "user:<uid>" or "agent:<agent_id>" — with any of `daily_tokens`, `monthly_tokens`, `daily_cost`,
   `monthly_cost`, `daily_calls`, `monthly_calls`, plus `applies_to`: which billing kinds count ("platform" by
   default; "byok" and "local" can be added). Periods are UTC days and calendar months. Spend comes from
   `model_usage`, so it is the same numbers users and admins see.
@@ -37,7 +38,11 @@ class BudgetExceeded(RuntimeError):
     error_class = "budget"
 
 
-def scope_id(agent_id=None, uid=None):
+def scope_id(agent_id=None, uid=None, per_user=False):
+    if per_user:
+        if agent_id or uid:
+            raise ValueError("A per-user default applies to every user: don't name one.")
+        return "user_default"
     if agent_id and uid:
         raise ValueError("A budget covers everything, one agent, or one user: not both.")
     if agent_id:
@@ -68,9 +73,9 @@ def _clean_limits(limits):
     return out
 
 
-def set_budget(actor_uid, *, agent_id=None, uid=None, limits=None, applies_to=("platform",), reason=""):
+def set_budget(actor_uid, *, agent_id=None, uid=None, per_user=False, limits=None, applies_to=("platform",), reason=""):
     """Replace a scope's limits (needs admin.manage_budgets; audited before it takes effect)."""
-    sid = scope_id(agent_id, uid)
+    sid = scope_id(agent_id, uid, per_user)
     rbac.check(actor_uid, "admin.manage_budgets", target=f"budget:{sid}")
     lim = _clean_limits(limits)
     kinds = sorted(set(applies_to or ()))
@@ -122,9 +127,9 @@ def _check_scope(doc, base_match, billing, now, label):
 def check(uid, billing, agent_id=None, task_budget=None, root_task_id=None, now=None):
     """Raise BudgetExceeded when the next call would go over any budget that applies. No budgets → no-op."""
     now = time.time() if now is None else now
-    scopes = {"global": {}, **({f"user:{uid}": {"uid": uid}} if uid else {}),
+    scopes = {"global": {}, **({f"user:{uid}": {"uid": uid}, "user_default": {"uid": uid}} if uid else {}),
               **({f"agent:{agent_id}": {"agent_id": agent_id}} if agent_id else {})}
-    labels = {"global": "the whole service", f"user:{uid}": "your account", f"agent:{agent_id}": f"the {agent_id} agent"}
+    labels = {"global": "the whole service", f"user:{uid}": "your account", "user_default": "your account", f"agent:{agent_id}": f"the {agent_id} agent"}
     for doc in M.budgets.find({"_id": {"$in": list(scopes)}}):
         _check_scope(doc, scopes[doc["_id"]], billing, now, labels.get(doc["_id"], doc["_id"]))
     if task_budget and root_task_id:
