@@ -49,10 +49,11 @@ def list_agents(ws):
     """Agents the user can start, with their version and the tools they may use."""
     from infra import runtime
     return jsonify(agents=[{"id": a.id, "version": a.version, "description": a.description, "tools": sorted(a.grants)}
-                           for a in sorted(runtime.AGENTS.values(), key=lambda a: a.id)])
+                           for a in sorted(runtime.AGENTS.values(), key=lambda a: a.id) if a.id not in SYSTEM_AGENTS])
 
 
 AGENT_MODES = ("off", "shadow", "on")
+SYSTEM_AGENTS = {"supervisor"}  # run by the platform for everyone; users can't start or see them
 
 
 def agent_mode(ws):
@@ -93,7 +94,7 @@ def start_agent_task(ws):
     from infra import runtime, tasks
     p = body()
     agent_id = str(p.get("agent_id") or "")
-    if agent_id not in runtime.AGENTS:
+    if agent_id not in runtime.AGENTS or agent_id in SYSTEM_AGENTS:
         raise Invalid("Unknown agent.", "agent_id", status=404)
     account = agent_mode(ws)
     if account == "off":

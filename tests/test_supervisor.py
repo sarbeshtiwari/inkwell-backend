@@ -142,3 +142,14 @@ def test_one_run_per_slot_across_ticks():
     supervisor.tick()
     supervisor.tick()
     assert A.M.tasks.count_documents({"kind": "agent.supervisor"}) == 1 and len(supervisor.reports(10)) == 1
+
+
+def test_users_cannot_start_or_see_the_supervisor_or_use_its_tools():
+    from infra import tools
+    uid, _ = make_user()
+    c = client_for(uid)
+    assert "supervisor" not in [a["id"] for a in c.get("/api/agents").get_json()["agents"]]
+    assert c.post("/api/agents/tasks", json={"agent_id": "supervisor", "input": {}}, headers=H).status_code == 404
+    ctx = tools.ToolContext(uid=uid, grants=supervisor.GRANTS, mode="on", agent_id="supervisor", task_id="t")
+    with pytest.raises(tools.ToolDenied, match="Only the Supervisor"):
+        tools.call(ctx, "supervision.health", {})

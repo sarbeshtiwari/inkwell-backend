@@ -101,6 +101,7 @@ def _group(coll, match, key, extra=None):
           "window_minutes": {"type": "number", "minimum": 5, "maximum": 1440}}},
       {"type": "object", "required": ["agents", "stuck", "queue", "models", "switches"]}, READ)
 def health(ctx, window_minutes=None):
+    _system_only(ctx)
     since = _now() - dt.timedelta(minutes=window_minutes or WINDOW_MINUTES)
     agents = {}
     for r in _group(M.agent_runs, {"started": {"$gte": since}, "agent_id": {"$ne": AGENT_ID}},
@@ -137,6 +138,12 @@ def health(ctx, window_minutes=None):
             "switches": {"global": sw["global"], "agents": sorted(sw["agents"]), "users": len(sw["users"])}}
 
 
+def _system_only(ctx):
+    """These tools see every user's agent activity (as figures): only the platform's own Supervisor run may use them."""
+    if ctx.uid != SYSTEM_UID or ctx.agent_id != AGENT_ID:
+        raise tools.ToolDenied("Only the Supervisor can use this.")
+
+
 def _must_act():
     if mode() != "act":
         raise tools.ToolDenied("The Supervisor is in observe mode: it reports, but doesn't act.")
@@ -149,6 +156,7 @@ def _must_act():
           "reason": {"type": "string", "maxLength": 300}}},
       {"type": "object", "required": ["paused"]}, WRITE_INTERNAL)
 def pause_agent(ctx, agent_id, reason):
+    _system_only(ctx)
     _must_act()
     if agent_id == AGENT_ID:
         raise tools.ToolDenied("The Supervisor can't pause itself.")
@@ -169,6 +177,7 @@ def pause_agent(ctx, agent_id, reason):
           "task_id": {"type": "string", "pattern": "[0-9a-f]{32}"}, "reason": {"type": "string", "maxLength": 300}}},
       {"type": "object", "required": ["cancelled"]}, WRITE_INTERNAL)
 def cancel_task(ctx, task_id, reason):
+    _system_only(ctx)
     _must_act()
     d = M.tasks.find_one({"_id": task_id}, {"uid": 1, "status": 1, "updated_at": 1, "agent_id": 1})
     stuck = d and d["status"] == "waiting_children" and d["updated_at"] <= _now() - dt.timedelta(hours=STUCK_HOURS)
@@ -184,6 +193,7 @@ def cancel_task(ctx, task_id, reason):
           "title": {"type": "string", "maxLength": 120}, "body": {"type": "string", "maxLength": 1000}}},
       {"type": "object", "required": ["notified"]}, WRITE_INTERNAL)
 def alert(ctx, title, body):
+    _system_only(ctx)
     from features.notify import notify
     admins = [r["_id"] for r in M.roles.find({"role": rbac.SUPER_ADMIN}, {"_id": 1})]
     for uid in admins:
