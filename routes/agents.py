@@ -52,24 +52,64 @@ def list_agents(ws):
                            for a in sorted(runtime.AGENTS.values(), key=lambda a: a.id)])
 
 
+AGENT_MODES = ("off", "shadow", "on")
+
+
+def agent_mode(ws):
+    """The user's own rollout switch (product decision D-12, 2026-11-27: each user decides for their account).
+    off: agents don't run. shadow (default): agents run but only read, change nothing and contact no one.
+    on: agents can act, and every external action still waits for the user's approval."""
+    m = (ws.load("agent_mode", {}) or {}).get("mode")
+    return m if m in AGENT_MODES else "shadow"
+
+
+@app.get("/api/agents/mode")
+@login_required
+def get_agent_mode(ws):
+    return jsonify(mode=agent_mode(ws), modes=list(AGENT_MODES))
+
+
+@app.put("/api/agents/mode")
+@login_required
+def set_agent_mode(ws):
+    """{mode: off | shadow | on} for the signed-in user's own account. Recorded in the audit log."""
+    from infra import audit
+    mode = body().get("mode")
+    if mode not in AGENT_MODES:
+        raise Invalid("Choose off, shadow or on.", "mode")
+    before = agent_mode(ws)
+    if mode != before:
+        audit.record("agent_mode.set", ws.uid, target=f"user:{ws.uid}", details={"from": before, "to": mode})
+        with ws.lock:
+            ws.save("agent_mode", {"mode": mode})
+    return jsonify(mode=mode)
+
+
 @app.post("/api/agents/tasks")
 @login_required
 def start_agent_task(ws):
-    """{agent_id, input}: queue a run for the signed-in user. Shadow mode only for now: turning agents on for real
-    work needs the per-user rollout flags (not built yet)."""
+    """{agent_id, input, idempotency_key?}: queue a run for the signed-in user, in the mode they chose for their
+    account (off refuses; a run can ask for shadow even when the account is on, never the other way round)."""
     from infra import runtime, tasks
     p = body()
     agent_id = str(p.get("agent_id") or "")
     if agent_id not in runtime.AGENTS:
         raise Invalid("Unknown agent.", "agent_id", status=404)
-    if (p.get("mode") or "shadow") != "shadow":
-        raise Invalid("Agents run in shadow mode only for now.", "mode", status=403)
+    account = agent_mode(ws)
+    if account == "off":
+        raise Invalid("Agents are switched off for your account. Turn them on in Approvals.", "mode", status=403)
+    wanted = p.get("mode") or account
+    if wanted not in ("shadow", "on"):
+        raise Invalid("Choose shadow or on.", "mode")
+    if wanted == "on" and account != "on":
+        raise Invalid("Your account is in shadow mode, so agents only look and report. Switch it on first.", "mode",
+                      status=403)
     inp = p.get("input") or {}
     if not isinstance(inp, dict):
         raise Invalid("input must be an object.", "input")
     key = p.get("idempotency_key")
     try:
-        tid = runtime.start(ws.uid, agent_id, inp, mode="shadow", idempotency_key=str(key) if key else None)
+        tid = runtime.start(ws.uid, agent_id, inp, mode=wanted, idempotency_key=str(key) if key else None)
     except ValueError as e:
         raise Invalid(str(e), "idempotency_key")
     return jsonify(task=tasks.get(ws.uid, tid)), 202

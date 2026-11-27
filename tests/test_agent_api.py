@@ -79,7 +79,7 @@ def test_user_starts_follows_and_reads_their_own_agent_task():
 def test_only_shadow_mode_unknown_agents_and_bad_input_are_refused():
     uid, _ = make_user()
     c = client_for(uid)
-    assert c.post("/api/agents/tasks", json={"agent_id": "judge", "mode": "on", "input": {}}, headers=H).status_code == 403
+    assert c.post("/api/agents/tasks", json={"agent_id": "judge", "mode": "on", "input": {}}, headers=H).status_code == 403  # account still in shadow
     assert c.post("/api/agents/tasks", json={"agent_id": "nope"}, headers=H).status_code == 404
     assert c.post("/api/agents/tasks", json={"agent_id": "judge", "input": "x"}, headers=H).status_code == 400
     assert c.post("/api/agents/tasks", json={"agent_id": "judge", "idempotency_key": "has space"}, headers=H).status_code == 400
@@ -122,3 +122,22 @@ def test_observatory_shows_metadata_and_never_content(admin):
     everything = repr(ov) + repr(rows) + repr(tr)
     assert SECRET not in everything and "summary" not in everything and "payload" not in everything
     assert admin.get("/api/admin/agents/traces/nope").status_code == 404
+
+
+def test_each_user_switches_their_own_account_off_shadow_or_on():
+    uid, _ = make_user()
+    other, _ = make_user()
+    c, oc = client_for(uid), client_for(other)
+    assert c.get("/api/agents/mode").get_json()["mode"] == "shadow"
+    assert c.put("/api/agents/mode", json={"mode": "loud"}, headers=H).status_code == 400
+    assert c.put("/api/agents/mode", json={"mode": "off"}, headers=H).get_json()["mode"] == "off"
+    assert c.post("/api/agents/tasks", json={"agent_id": "judge", "input": {"goal": "g"}}, headers=H).status_code == 403
+    assert c.put("/api/agents/mode", json={"mode": "on"}, headers=H).status_code == 200
+    on = c.post("/api/agents/tasks", json={"agent_id": "judge", "input": {"goal": "g"}}, headers=H).get_json()["task"]
+    assert on["input"]["mode"] == "on"
+    sh = c.post("/api/agents/tasks", json={"agent_id": "judge", "mode": "shadow", "input": {"goal": "g"}}, headers=H).get_json()["task"]
+    assert sh["input"]["mode"] == "shadow"                                 # a run may still ask for shadow
+    assert oc.get("/api/agents/mode").get_json()["mode"] == "shadow"       # one user's switch never affects another
+    assert oc.post("/api/agents/tasks", json={"agent_id": "judge", "mode": "on", "input": {}}, headers=H).status_code == 403
+    ev = [e["details"] for e in A.M.audit_log.find({"action": "agent_mode.set", "actor": uid}).sort("seq", 1)]
+    assert ev == [{"from": "shadow", "to": "off"}, {"from": "off", "to": "on"}]
