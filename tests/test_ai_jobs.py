@@ -287,3 +287,14 @@ def test_unreadable_resume_shows_the_real_reason_not_a_generic_error(user, monke
     c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H)
     st = _wait_match(c)
     assert st["state"] == "error" and st["error"].startswith("We couldn't read that PDF")
+
+
+def test_status_survives_a_job_description_stored_as_a_dict(user):
+    """Production 500 on GET /api/ai-jobs (2026-11-27): an ai_jds entry that wasn't a string crashed learning."""
+    ws = user["ws"]
+    with ws.lock:
+        ws.save("ai_match", {"results": [{"id": "j1", "title": "Backend Developer", "company": "Acme", "score": 80}]})
+        ws.save("ai_pipeline", {"j1": {"status": "applied", "at": "2026-11-01T10:00:00"}})
+        ws.save("ai_jds", {"j1": {"text": "Python, 3+ years"}})
+    assert user["client"].get("/api/ai-jobs").status_code == 200
+    assert AI.years_asked({"x": 1}) is None and AI.years_asked("needs 3+ years") is not None
