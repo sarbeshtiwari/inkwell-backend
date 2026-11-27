@@ -44,7 +44,7 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
                 "write_internal" if t["id"] in ("supervision.pause_agent", "supervision.cancel_task", "supervision.alert",
                                                 "replies.set_state", "inbox.sync", "inbox.summarise",
                                                 "replies.check", "mail.sync", "alerts.scan",
-                                                "alerts.tell", "digest.send") else "read"
+                                                "alerts.tell", "digest.send", "matches.save") else "read"
             assert t["risk"] == expected
     assert [t["id"] for t in tools.describe({"rules.read"})] == ["rules.read"]
 
@@ -136,7 +136,7 @@ def test_rank_tool_runs_the_real_engine_with_the_context_users_resume(monkeypatc
     a, _ = make_user()
     seen = []
     monkeypatch.setattr(agent_tools, "_profile",
-                        lambda ws, role, years, location="", company="": seen.append(ws.uid) or
+                        lambda ws, role, years, location="", company="", resume_name="": seen.append(ws.uid) or
                         {"role": role, "years": years, "location": location, "company": company,
                          "resume": "python django postgres backend developer", "skills": ["Python", "Django", "PostgreSQL"]})
     jobs = [{"id": "gh:acme:1", "title": "Backend Developer", "company": "Acme", "text": "Python Django PostgreSQL, 2+ years"},

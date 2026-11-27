@@ -7,60 +7,35 @@ from flask import jsonify
 from bridge import login_required
 
 from features.ai_jobs.apply import COVER_DOC, can_hand_over, cover_file
-from features.ai_jobs.common import APPLY_PER_DAY, C, HANDOVER, J, OLLAMA_MODEL, bp
-from infra import locks, operations
-from infra.redact import error_text
-from features.ai_jobs.ranking import build_chain
+from features.ai_jobs.common import APPLY_PER_DAY, C, HANDOVER, J, MAX_RESULTS, OLLAMA_MODEL, bp
+from infra import operations
 from features.ai_jobs import learning, signals
 from features.ai_jobs.evaluate import get_rules, report_brief, stamp_seen
 from features.ai_jobs.tracker import STATES, due_followups, set_status
 
 
-def run_match(op, uid, want, sources, use_llm):
-    """The search runs as one chain: cancelling stops it before the search or before results are saved (a search in
-    progress isn't interrupted part-way)."""
-    ws = C().Workspace(uid)
-    run = {"state": "running", "stage": "Reading your resume", "want": want, "sources": sources, "started": time.time(), "results": []}
-    try:
-        op.checkpoint()
-        resume = J().resume_text(ws) if not want.get("resume") else pdf_text(ws, want["resume"])
-        if len(re.findall(r"[A-Za-z]{2,}", resume or "")) < MIN_RESUME_WORDS:
-            raise C().Invalid("Inkwell couldn't find any text in that resume. It looks like a scanned or image-only "
-                              "PDF: export it again as a text PDF (from Word, Google Docs or LaTeX) and pick it here.",
-                              "resume")
-        profile = {**want, "resume": resume, "skills": [s for s in J().skill_hits(resume, J().SKILLS) if s not in ("C", "R")]}
-        run["skills"] = profile["skills"]
-        run["stage"] = "Searching"
-        op.update(public={"stage": "Searching"}, private={"skills": profile["skills"]})
-        op.checkpoint()
-        keys = ws.load("ai_keys", {})
-        from features.ai_jobs import models
-        with models.use(models.config(ws) if use_llm else None):
-            state = build_chain(keys, sources, ws.load("ai_portals", []) or [], want.get("location", "")).invoke(
-                {"profile": profile, "use_llm": use_llm, "taste": learning.model(ws), "taste_hint": learning.prompt_hint(ws)})
-        results = state["ranked"]
-        op.checkpoint()  # cancelled while searching: keep the previous results, save nothing new
-        mark_rules(ws, results, state.get("jds", {}))
+def save_match(ws, want, sources, results, jds, errors, engine, considered, error=""):
+    """Record a finished job search (run by the agents: features/ai_jobs/agents.py) as the user's match results:
+    the user's rules on each job, repost tracking, the saved descriptions, and one notification. Returns how many."""
+    results = [r for r in results if isinstance(r, dict) and r.get("id")][:MAX_RESULTS]
+    prev = ws.load("ai_match", {}) or {}
+    run = {"want": want, "sources": sources, "started": prev.get("started") or time.time(), "finished": time.time(),
+           "task_id": prev.get("task_id"), "skills": prev.get("skills", [])}
+    if error:
+        run.update(state="error", stage="Error", error=error, results=prev.get("results", []) if prev.get("state") == "done" else [])
+    else:
+        mark_rules(ws, results, jds)
         with ws.lock:
-            ws.save("ai_jds", state.get("jds", {}))
+            ws.save("ai_jds", {k: (v if isinstance(v, str) else "")[:12000] for k, v in jds.items() if k in {r["id"] for r in results}})
         stamp_seen(ws, results)
-        run.update(state="done", stage="Done", results=results, errors=state["errors"], engine=state["engine"],
-                   considered=state.get("considered", 0))
-    except (operations.Cancelled, locks.LeaseLost):
-        raise
-    except C().Invalid as e:  # a reason the user can act on (unreadable or missing resume): show it as it is
-        print(f"[Inkwell] AI match stopped: {e.message}", flush=True)
-        run.update(state="error", stage="Error", error=e.message)
-    except Exception as e:
-        print(f"[Inkwell] AI match failed: {error_text(e, 200)}", flush=True)
-        run.update(state="error", stage="Error", error="Something went wrong while matching. Please try again.")
-    run["finished"] = time.time()
+        run.update(state="done", stage="Done", results=results, errors=errors, engine=engine, considered=considered)
     with ws.lock:
-        ws.save("ai_match", {k: v for k, v in run.items() if k != "thread"})
+        ws.save("ai_match", run)
     from features.notify import notify
-    good = sum(1 for r in run.get("results", []) if r["score"] >= 70)
-    notify(uid, f"AI job match: {good} strong match{'es' if good != 1 else ''}", f"For {want['role']}. Open the page to review them.",
-           "/app/ai-jobs", "info")
+    good = sum(1 for r in results if (r.get("score") or 0) >= 70)
+    notify(ws.uid, f"AI job match: {good} strong match{'es' if good != 1 else ''}" if not error else "AI job match stopped",
+           f"For {want.get('role', '')}. Open the page to review them." if not error else error, "/app/ai-jobs", "info")
+    return len(results)
 
 
 def mark_rules(ws, results, jds):
@@ -102,16 +77,27 @@ def model_state(ws):
             "model_provider": (ws.load("ai_model", {}) or {}).get("provider") or "ollama"}
 
 
+STAGES = {"job_scout": "Searching", "job_analyst": "Ranking matches"}
+
+
 def match_state(ws):
-    """The running search (from the shared record) or the last finished one."""
-    v = operations.current(ws.uid, "ai_match")
-    saved = ws.load("ai_match", None)
-    if v and v["state"] == operations.RUNNING:
-        return {"state": "running", "stage": v.get("stage", ""), "want": v.get("want", {}), "sources": v.get("sources", []),
-                "started": v["started"], "results": [], "skills": v.get("skills", [])}
-    if v and v["state"] == operations.INTERRUPTED and (saved or {}).get("finished", 0) < (v["started"] or 0):
-        return {**(saved or {}), "state": "error", "stage": "Error", "error": v["error"]}
-    return saved or {"state": "idle"}
+    """The running search (its agent tasks) or the last finished one."""
+    from infra import tasks
+    saved = ws.load("ai_match", None) or {"state": "idle"}
+    tid = saved.get("task_id")
+    if saved.get("state") != "running" or not tid:
+        return saved
+    t = tasks.get(ws.uid, tid)
+    if t and t["status"] not in tasks.FINAL:
+        kids = tasks.children(ws.uid, tid)
+        live = [k for k in kids if k["status"] not in tasks.FINAL]
+        stage = STAGES.get(live[-1]["agent_id"], "Ranking matches") if live else ("Ranking matches" if kids else "Reading your resume")
+        return {**saved, "stage": stage, "results": []}
+    if t and t["status"] == "done":
+        return ws.load("ai_match", None) or saved
+    why = "The search was cancelled." if t and t["status"] == "cancelled" else \
+        (t or {}).get("error") or "Something went wrong while matching. Please try again."
+    return {**saved, "state": "error", "stage": "Error", "error": str(why)[:300]}
 
 
 def public_state(ws):
@@ -164,13 +150,28 @@ def start(ws):
     for s in sources:
         if s in ("tavily", "brave") and not keys.get(s):
             raise core.Invalid(f"Add your {s.capitalize()} API key first, or untick it.", "sources")
-    if operations.running(ws.uid, "ai_match"):
+    cur = match_state(ws)
+    if cur.get("state") == "running":
         raise core.Invalid("A search is already running.", status=409)
+    from infra import runtime
+    if runtime.user_mode(ws.uid) == "off":
+        raise core.Invalid("Agents are switched off for your account, and the AI job match runs on agents. "
+                           "Turn them on in Approvals.", status=403)
+    resume = J().resume_text(ws) if not want["resume"] else pdf_text(ws, want["resume"])  # unreadable: 400 now
+    if len(re.findall(r"[A-Za-z]{2,}", resume or "")) < MIN_RESUME_WORDS:
+        raise core.Invalid("Inkwell couldn't find any text in that resume. It looks like a scanned or image-only PDF: "
+                           "export it again as a text PDF (from Word, Google Docs or LaTeX) and pick it here.", "resume")
     if core.rate_limited(("ai-match", ws.uid), 30, 86400):
         raise core.Invalid("You've run 30 searches today. Try again tomorrow.", status=429)
-    op = operations.start(ws.uid, "ai_match", public={"stage": "Reading your resume"}, private={"want": want, "sources": sources},
-                          busy="A search is already running.")
-    operations.spawn(op, run_match, ws.uid, want, sources, bool(p.get("use_llm", True)), name="ai-match")
+    skills = [x for x in J().skill_hits(resume, J().SKILLS) if x not in ("C", "R")]
+    # The user asked for this search on this page, so its results are saved whatever the switch (Shadow or On);
+    # the run only searches, ranks and saves: nothing is applied to or sent from here.
+    tid = runtime.start(ws.uid, "orchestrator", {"criteria": {**want, "count": MAX_RESULTS, "sources": sources, "match": True,
+                                                              "review": bool(p.get("use_llm", True)), "prepare": False,
+                                                              "research": False, "apply": False}}, mode="on")
+    with ws.lock:
+        ws.save("ai_match", {**(ws.load("ai_match", {}) or {}), "state": "running", "stage": "Reading your resume",
+                             "want": want, "sources": sources, "started": time.time(), "task_id": tid, "skills": skills})
     return jsonify(ok=True)
 
 

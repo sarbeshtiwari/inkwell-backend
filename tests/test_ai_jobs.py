@@ -64,8 +64,9 @@ def test_only_supported_application_sites_are_recognised(url, ok):
 def test_pipeline_with_career_sites(monkeypatch):
     patch_shared(monkeypatch, "board_jobs", src=AI, value=lambda ats, board: JOBS if board == "acme" else [])
     patch_shared(monkeypatch, "BOARDS", src=AI, value=[("lever", "acme")])
-    st = AI.build_chain({}, ["career_sites"]).invoke({"profile": PROFILE, "use_llm": False})
-    assert st["ranked"][0]["title"] == "Full Stack Engineer" and st["engine"] == "Inkwell AI" and st["considered"] == 4
+    jobs, errors = AI.search_sources(AI.make_tools({}), ["career_sites"], PROFILE)
+    ranked = AI.rank(PROFILE, jobs)
+    assert errors == [] and len(jobs) == 4 and ranked[0]["title"] == "Full Stack Engineer"
 
 
 def test_web_search_results_are_read_from_their_job_board(monkeypatch):
@@ -97,13 +98,30 @@ def test_full_run_from_the_api(user, monkeypatch):
     patch_shared(monkeypatch, "pdf_text", src=AI, value=lambda ws, name: RESUME)
     user["ws"].save_doc("resume.pdf", b"%PDF-1.4 x")
     c = user["client"]
+    from features.ai_jobs import signals
+    monkeypatch.setattr(signals, "ats_alive", lambda job: True)
     assert c.post("/api/ai-jobs/match", json={"role": "Full Stack Developer", "years": 3, "resume": "resume.pdf"}, headers=H).status_code == 200
-    for _ in range(100):
-        st = c.get("/api/ai-jobs").get_json()
-        if st["state"] != "running":
-            break
-        time.sleep(0.05)
+    assert c.get("/api/ai-jobs").get_json()["state"] == "running"
+    assert c.post("/api/ai-jobs/match", json={"role": "Full Stack Developer", "years": 3}, headers=H).status_code == 409
+    _run_agents()                                        # the agents do the search: Orchestrator -> Scout -> Analyst
+    st = c.get("/api/ai-jobs").get_json()
     assert st["state"] == "done" and st["results"][0]["title"] == "Full Stack Engineer"
+    assert st["engine"].startswith("Inkwell AI agents") and st["results"][0]["can_apply"] is not None
+
+
+def _run_agents():
+    from infra import tasks
+    while tasks.run_once("test", lease=10) is not None:
+        pass
+
+
+def test_match_is_refused_when_agents_are_off(user):
+    ws = user["ws"]
+    with ws.lock:
+        ws.save("agent_mode", {"mode": "off"})
+    ws.save_doc("resume.pdf", b"%PDF-1.4 x")
+    r = user["client"].post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "resume.pdf"}, headers=H)
+    assert r.status_code == 403 and "Agents are switched off" in r.get_json()["error"]
 
 
 def test_auto_apply_needs_consent_and_records_the_application(user, monkeypatch):
@@ -264,29 +282,18 @@ def test_cover_letter_choice(user):
     assert anon.get("/api/ext/cover", headers={**H, "Authorization": "Bearer " + key}).data.startswith(b"Dear Hiring Team")
 
 
-def _wait_match(c):
-    for _ in range(200):
-        st = c.get("/api/ai-jobs").get_json()
-        if st["state"] != "running":
-            return st
-        time.sleep(0.05)
-    return st
-
-
 def test_unreadable_resume_shows_the_real_reason_not_a_generic_error(user, monkeypatch):
     c = user["client"]
     user["ws"].save_doc("scan.pdf", b"%PDF-1.4 x")
     patch_shared(monkeypatch, "pdf_text", src=AI, value=lambda ws, name: "")   # an image-only PDF: no text layer
-    assert c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H).status_code == 200
-    st = _wait_match(c)
-    assert st["state"] == "error" and "scanned or image-only" in st["error"]
+    r = c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H)
+    assert r.status_code == 400 and "scanned or image-only" in r.get_json()["error"]
 
     def broken(ws, name):
         raise A.Invalid("We couldn't read that PDF. Upload a text-based resume (not a scanned image).", "resume")
     patch_shared(monkeypatch, "pdf_text", src=AI, value=broken)
-    c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H)
-    st = _wait_match(c)
-    assert st["state"] == "error" and st["error"].startswith("We couldn't read that PDF")
+    r = c.post("/api/ai-jobs/match", json={"role": "Developer", "years": 2, "resume": "scan.pdf"}, headers=H)
+    assert r.status_code == 400 and r.get_json()["error"].startswith("We couldn't read that PDF")
 
 
 def test_status_survives_a_job_description_stored_as_a_dict(user):

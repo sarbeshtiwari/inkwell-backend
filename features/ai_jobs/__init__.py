@@ -32,11 +32,11 @@ from .sources import (  # noqa: F401
     make_tools, norm_ashby, norm_gh, norm_lever, search_query, web_hits_to_jobs,
 )
 from .ranking import (  # noqa: F401
-    GENERIC_TECH, NON_TECH, STOP, build_chain, cosine, llm_review,
+    GENERIC_TECH, NON_TECH, STOP, cosine, search_sources,
     ollama_ready, rank, role_fit, tokens, years_asked,
 )
 from .runs import (  # noqa: F401
-    DETAIL_FIELDS, pdf_text, public_state, run_match, save_details, save_keys,
+    DETAIL_FIELDS, pdf_text, public_state, save_details, save_keys, save_match,
     start, status,
 )
 from .answers import (  # noqa: F401

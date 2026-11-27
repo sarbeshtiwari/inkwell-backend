@@ -10,7 +10,7 @@ import requests
 
 import app as A
 from conftest import make_user
-from features.ai_jobs import evaluate, models, ranking
+from features.ai_jobs import evaluate, models
 from infra import gateway
 from infra.gateway import FakeProvider, GatewayError, Reply
 
@@ -176,16 +176,13 @@ def test_config_carries_the_users_id_so_usage_is_scoped(user, monkeypatch, fake)
 
 
 def test_existing_callers_go_through_the_gateway(fake):
-    """Ranking review and cover letters (models.current() callers) record usage without changing their code."""
+    """Existing models.current() callers (cover letters) record usage without changing their code."""
     uid, _ = make_user()
-    fake('{"fit": 80, "verdict": "good"}', "Dear team, " + "x" * 400)
-    jobs = [{"title": "Dev", "company": "Acme", "location": "", "summary": "py", "score": 60}]
+    fake("Dear team, " + "x" * 400)
     profile = {"role": "dev", "years": 3, "resume": "python"}
     with models.use(cfg_for(uid)):
-        ranking.llm_review(profile, jobs)
         letter = evaluate.cover_letter(profile, {"title": "Dev", "company": "Acme"}, "posting", "Sam")
-    assert jobs[0]["ai_verdict"] == "good" and letter.startswith("Dear team")
-    assert len(records(uid)) == 2
+    assert letter.startswith("Dear team") and len(records(uid)) == 1
 
 
 def test_context_fields_are_recorded_and_unknown_fields_refused(fake):

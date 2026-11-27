@@ -68,13 +68,14 @@ def _ask(config, system, human, schema_keys, max_tokens=400):
 
 
 def _job_brief(j):
-    return {k: j.get(k, "") for k in ("id", "title", "company", "location", "url", "ats", "posted")} | \
+    return {k: j.get(k, "") for k in ("id", "title", "company", "location", "url", "ats", "posted", "board", "apply_url", "via")} | \
            {"text": (j.get("text") or "")[:TEXT_CAP]}
 
 
 # ---- Job Scout ----------------------------------------------------------------------------------------------------
 
 class ScoutState(TypedDict, total=False):
+    sources: list        # the sources the user allowed (default: all searchable ones with a key)
     role: str
     location: str
     company: str
@@ -90,19 +91,21 @@ def scout_plan(state, config):
     rnd = state.get("round", 0) + 1
     runtime.checkpoint(config)
     tried = [f"{p['source']}:{p['role']}" for p in state.get("plan", [])]
+    allowed = [x for x in (state.get("sources") or SEARCHABLE) if x in SEARCHABLE] or ["career_sites"]
     if rnd == 1:
-        default = [{"source": "career_sites", "role": state["role"]}, {"source": "remote_boards", "role": state["role"]}]
+        default = [{"source": x, "role": state["role"]} for x in allowed]
         ask = "Choose where to search first."
     else:
-        default = [{"source": "remote_boards", "role": w} for w in _broader(state["role"])][:2]
+        wide = "remote_boards" if "remote_boards" in allowed else allowed[0]
+        default = [{"source": wide, "role": w} for w in _broader(state["role"])][:2]
         ask = f"Only {len(state.get('jobs', []))} plausible jobs were found with {tried}. Choose a different search."
-    out = _ask(config, "You plan a job search. Answer JSON: {\"searches\": [{\"source\": one of " + str(list(SEARCHABLE))
+    out = _ask(config, "You plan a job search. Answer JSON: {\"searches\": [{\"source\": one of " + str(allowed)
                + ", \"role\": \"a job title to search for\"}], \"why\": \"one sentence\"}. At most 3 searches.",
                f"{ask}\nWanted role: {state['role']}. Location: {state.get('location') or 'any'}. "
                f"Company: {state.get('company') or 'any'}.", ["searches"])
     plan = []
     for s in (out or {}).get("searches", [])[:3]:
-        if isinstance(s, dict) and s.get("source") in SEARCHABLE and isinstance(s.get("role"), str) and 2 <= len(s["role"]) <= 120:
+        if isinstance(s, dict) and s.get("source") in allowed and isinstance(s.get("role"), str) and 2 <= len(s["role"]) <= 120:
             if f"{s['source']}:{s['role']}" not in tried:
                 plan.append({"source": s["source"], "role": s["role"], "round": rnd})
     note = (out or {}).get("why") if plan else None
@@ -183,19 +186,22 @@ def build_scout():
 # ---- Job Analyst --------------------------------------------------------------------------------------------------
 
 class AnalystState(TypedDict, total=False):
+    resume: str          # which resume file to judge against (default: the user's resume)
+    review: bool         # ask the model for a second opinion (default yes)
     role: str
     years: float
     location: str
     jobs: list
     ranked: list
     shortlist: list
+    reviewed: int
     notes: Annotated[list, operator.add]
 
 
 def analyst_rank(state, config):
     runtime.checkpoint(config)
     ranked = tools.call(runtime.ctx(config), "jobs.rank", {"role": state["role"], "years": float(state.get("years") or 0),
-                                                          "location": state.get("location", ""),
+                                                          "location": state.get("location", ""), "resume": state.get("resume", ""),
                                                           "jobs": [_job_brief(j) for j in state.get("jobs", [])]})
     return {"ranked": ranked}
 
@@ -219,8 +225,9 @@ def analyst_review(state, config):
         item["recommend"] = not r["rule_breaks"] and (r.get("score") or 0) >= 50
         shortlist.append(item)
     reviewed = 0
+    by_id = {r["id"]: r for r in state["ranked"]}
     for item in shortlist:
-        if reviewed >= REVIEW_TOP or not item["recommend"]:
+        if state.get("review") is False or reviewed >= REVIEW_TOP or not item["recommend"]:
             continue
         runtime.checkpoint(config)
         out = _ask(config, "You are a careful career advisor. Answer JSON: {\"fit\": 0-100, \"verdict\": \"one honest "
@@ -234,8 +241,12 @@ def analyst_review(state, config):
             item["verdict"] = str(out.get("verdict", ""))[:300]
             item["red_flags"] = [str(f)[:80] for f in (out.get("red_flags") or [])[:5] if isinstance(f, str)]
             item["recommend"] = item["recommend"] and item["model_fit"] >= 40
+            full = by_id[item["id"]]  # the ranked list shown on the page: engine score blended with the model's fit
+            full["ai_verdict"] = item["verdict"][:200]
+            full["score"] = round(0.6 * (full.get("score") or 0) + 0.4 * item["model_fit"])
     note = f"model reviewed the top {reviewed}" if reviewed else "no model set up: ranked by Inkwell's engine only"
-    return {"shortlist": shortlist, "notes": [note]}
+    ranked = sorted(state["ranked"], key=lambda x: -(x.get("score") or 0))
+    return {"shortlist": shortlist, "ranked": ranked, "reviewed": reviewed, "notes": [note]}
 
 
 def build_analyst():
@@ -428,13 +439,16 @@ def orch_plan(state, config):
         years, count = 0.0, 10
     criteria = {"role": role, "years": years, "location": str(c.get("location") or "")[:120], "count": count,
                 "research": bool(c.get("research")), "prepare": c.get("prepare") is not False,
-                "apply": bool(c.get("apply"))}
+                "apply": bool(c.get("apply")), "match": bool(c.get("match")),
+                "company": str(c.get("company") or "")[:120], "resume": str(c.get("resume") or "")[:200],
+                "sources": [x for x in (c.get("sources") or []) if x in SEARCHABLE], "review": c.get("review") is not False}
     return {"criteria": criteria, "notes": [f"Looking for {count} × {role}" + (f" in {criteria['location']}" if criteria["location"] else "")]}
 
 
 def orch_scout(state, config):
     cr = state["criteria"]
-    child = runtime.delegate(config, "job_scout", {"role": cr["role"], "location": cr["location"]}, "scout")
+    child = runtime.delegate(config, "job_scout", {"role": cr["role"], "location": cr["location"],
+                                                   "company": cr.get("company", ""), "sources": cr.get("sources") or []}, "scout")
     return {"scout": {"status": child["status"], "result": child.get("result") or {}, "error": child.get("error"),
                       "task_id": child["id"]}}
 
@@ -446,6 +460,7 @@ def orch_next(state):
 def orch_analyst(state, config):
     cr = state["criteria"]
     child = runtime.delegate(config, "job_analyst", {"role": cr["role"], "years": cr["years"], "location": cr["location"],
+                                                    "resume": cr.get("resume", ""), "review": cr.get("review", True),
                                                     "jobs": state["scout"]["result"]["jobs"]}, "analyst")
     return {"analysis": {"status": child["status"], "result": child.get("result") or {}, "error": child.get("error"),
                          "task_id": child["id"]}}
@@ -524,6 +539,32 @@ def orch_report(state, config):
     return {"report": report}
 
 
+def orch_save(state, config):
+    """The AI job match page's run: save the ranked jobs as the user's match results (or why there are none)."""
+    cr, scout, analysis = state["criteria"], state.get("scout") or {}, state.get("analysis") or {}
+    res = analysis.get("result") or {}
+    ranked = [{k: v for k, v in r.items() if k != "rule_breaks"} for r in (res.get("ranked") or [])]
+    jds = {j["id"]: j.get("text", "") for j in (scout.get("result") or {}).get("jobs", [])}
+    error = ""
+    for name, part in (("searching", scout), ("ranking", analysis)):
+        if part and part.get("status") not in (None, "done"):
+            error = str(part.get("error") or f"Something went wrong while {name}.")[:300]
+            break
+    cfg = _model(config)
+    engine = f"Inkwell AI agents + {cfg['label']}" if cfg and res.get("reviewed") else "Inkwell AI agents"
+    want = {k: cr.get(k) for k in ("role", "years", "location", "company", "resume")}
+    tools.call(runtime.ctx(config), "matches.save", {
+        "want": want, "sources": cr.get("sources") or ["career_sites"], "results": ranked[:100], "jds": jds,
+        "errors": [str(e)[:300] for e in (scout.get("result") or {}).get("errors", [])][:50], "engine": engine,
+        "considered": len((scout.get("result") or {}).get("found", []) or (scout.get("result") or {}).get("jobs", [])),
+        "error": error})
+    return {"notes": [f"Saved {len(ranked)} matches" if not error else f"Match failed: {error}"]}
+
+
+def orch_after_report(state):
+    return "save" if state["criteria"].get("match") else END
+
+
 def build_orchestrator():
     g = StateGraph(OrchestratorState)
     g.add_node("plan", orch_plan)
@@ -541,7 +582,9 @@ def build_orchestrator():
     g.add_conditional_edges("research", orch_after_research, {"write": "write", "apply": "apply", "report": "report"})
     g.add_conditional_edges("write", orch_after_write, {"apply": "apply", "report": "report"})
     g.add_edge("apply", "report")
-    g.add_edge("report", END)
+    g.add_node("save", orch_save)
+    g.add_conditional_edges("report", orch_after_report, {"save": "save", END: END})
+    g.add_edge("save", END)
     return g
 
 
@@ -568,7 +611,7 @@ def register():
         max_steps=4, description="Checks which picks can be applied to and submits each one only after you approve it.",
         instructions="at most 5 jobs; one approval per application, asked together; never in shadow mode"))
     runtime.register_agent(runtime.Agent(
-        "orchestrator", "4", "orchestrator-4", frozenset(), build_orchestrator, max_steps=10,
+        "orchestrator", "5", "orchestrator-5", frozenset({"matches.save"}), build_orchestrator, max_steps=10,
         description="Turns a job-search goal into a plan, delegates to the Scout and the Analyst, and reports.",
         instructions="goal to criteria; scout, analyst, researcher when asked, writer, applicant when asked; report"))
 
