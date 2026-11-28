@@ -73,7 +73,9 @@ def apply(ws):
         if core.rate_limited(("ai-apply", ws.uid), APPLY_PER_DAY, 86400):
             raise core.Invalid(f"Inkwell AI applies to at most {APPLY_PER_DAY} jobs a day.", status=429)
     visible = bool(core.body().get("watch")) and can_hand_over()
-    op = operations.start(ws.uid, "ai_apply", public={"total": len(picks), "done": 0, "visible": visible}, private={"current": ""},
+    op = operations.start(ws.uid, "ai_apply", public={"total": len(picks), "done": 0, "visible": visible, "began": time.time(),
+                                                   "queue": [f"{p.get('title', '')[:60]} · {p.get('company', '')[:40]}" for p in picks]},
+                          private={"current": ""},
                           busy="Already applying. Wait for it to finish.")
     operations.spawn(op, run_apply, ws.uid, picks, visible, name="ai-apply")
     return jsonify(ok=True, total=len(picks))
@@ -108,7 +110,9 @@ def finish(ws, jid):
         raise core.Invalid("A form is already open. Finish or close that window first.", status=409)
     if not resume_file(ws)[1]:
         raise core.Invalid("Upload your resume as a PDF first.", "resume")
-    op = operations.start(ws.uid, "ai_apply", public={"total": 1, "done": 0, "visible": True}, private={"current": job["title"]},
+    op = operations.start(ws.uid, "ai_apply", public={"total": 1, "done": 0, "visible": True, "began": time.time(),
+                                                   "queue": [f"{job.get('title', '')[:60]} · {job.get('company', '')[:40]}"]},
+                          private={"current": job["title"]},
                           busy="A form is already open. Finish or close that window first.")
     HANDOVER[ws.uid] = jid
     operations.spawn(op, run_watch, ws.uid, [job], name="ai-watch")

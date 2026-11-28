@@ -45,7 +45,7 @@ def test_registered_agent_tools_are_read_only_and_well_formed():
                                                 "replies.set_state", "inbox.sync", "inbox.summarise",
                                                 "replies.check", "mail.sync", "alerts.scan",
                                                 "alerts.tell", "digest.send", "matches.save",
-                                                "finder.record", "finder.save") else "read"
+                                                "finder.record", "finder.save", "research.save") else "read"
             assert t["risk"] == expected
     assert [t["id"] for t in tools.describe({"testing.notes"})] == ["testing.notes"]
 

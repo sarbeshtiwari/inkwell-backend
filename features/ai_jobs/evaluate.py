@@ -414,7 +414,10 @@ def evaluate_many(ws):
     for _ in ids:
         if core.rate_limited(("ai-eval", ws.uid), 150, 86400):
             raise core.Invalid("You've evaluated 150 jobs today. Try again tomorrow.", status=429)
-    op = operations.start(ws.uid, "ai_evaluate", public={"total": len(ids), "done": 0}, private={"current": ""},
+    by_id = {r["id"]: r for r in ws.load("ai_match", {}).get("results", [])}
+    queue = [f"{by_id[i].get('title', '')[:60]} · {by_id[i].get('company', '')[:40]}" for i in ids]
+    op = operations.start(ws.uid, "ai_evaluate", public={"total": len(ids), "done": 0, "queue": queue, "began": time.time()},
+                          private={"current": ""},
                           busy="Already evaluating. Wait for it to finish.")
     operations.spawn(op, run_batch, ws.uid, ids, name="ai-evaluate")
     return jsonify(ok=True, total=len(ids))
