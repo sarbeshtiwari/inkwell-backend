@@ -23,11 +23,22 @@ PLATFORM = {  # provider: (label, base URL, environment variable holding the key
     "anthropic": ("Claude (Anthropic)", "https://api.anthropic.com/v1", "PLATFORM_ANTHROPIC_KEY"),
     "openai": ("OpenAI", "https://api.openai.com/v1", "PLATFORM_OPENAI_KEY"),
 }
+LOCAL = {  # provider: (label, model names offered) — runs on this computer, no key; never in production
+    "claude_cli": ("Claude Code (this computer, your plan)", ("sonnet", "opus", "haiku")),
+}
 MODEL_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
 
 
 def _key(provider):
-    return os.environ.get(PLATFORM[provider][2], "").strip()
+    return os.environ.get(PLATFORM[provider][2], "").strip() if provider in PLATFORM else ""
+
+
+def _ready(provider):
+    """The provider can answer: a platform key on the server, or Claude Code installed on this computer."""
+    if provider in LOCAL:
+        from features.ai_jobs import cli_llm
+        return cli_llm.available(provider)
+    return provider in PLATFORM and bool(_key(provider))
 
 
 def current():
@@ -36,13 +47,15 @@ def current():
     if not d or not d.get("provider"):
         return None
     return {"provider": d["provider"], "model": d["model"], "version": d.get("version", 1), "by": d.get("by"),
-            "at": d.get("at"), "key_configured": d["provider"] in PLATFORM and bool(_key(d["provider"]))}
+            "at": d.get("at"), "key_configured": _ready(d["provider"])}
 
 
 def status():
     """For the admin view: the setting and which providers have a key configured on the server (never the keys)."""
     return {"config": current(), "providers": [{"id": p, "label": v[0], "key_configured": bool(_key(p))}
-                                               for p, v in PLATFORM.items()]}
+                                               for p, v in PLATFORM.items()]
+            + [{"id": p, "label": v[0], "key_configured": _ready(p), "local": True, "models": list(v[1])}
+               for p, v in LOCAL.items() if _ready(p)]}
 
 
 def set_model(actor_uid, provider, model, reason=""):
@@ -56,11 +69,14 @@ def set_model(actor_uid, provider, model, reason=""):
         M.model_configs.update_one({"_id": "global"}, {"$set": {"provider": None, "model": None, "by": actor_uid,
                                                                "at": time.time()}, "$inc": {"version": 1}}, upsert=True)
         return current()
-    if provider not in PLATFORM:
-        raise Invalid("Choose anthropic or openai.", "provider")
+    if provider not in PLATFORM and provider not in LOCAL:
+        raise Invalid("Choose anthropic, openai or claude_cli.", "provider")
     if not isinstance(model, str) or not MODEL_OK.match(model):
         raise Invalid("Give the provider's model name.", "model")
-    if not _key(provider):
+    if provider in LOCAL and not _ready(provider):
+        raise Invalid("Claude Code isn't installed on this computer (or this is the hosted service), so it can't be used.",
+                      "provider", status=409)
+    if provider in PLATFORM and not _key(provider):
         raise Invalid(f"The server has no {PLATFORM[provider][2]} set, so {PLATFORM[provider][0]} can't be used yet.",
                       "provider", status=409)
     audit.record("model_config.set", actor_uid, target="model_config:global",
@@ -75,6 +91,10 @@ def for_agents(uid):
     c = current()
     if not c or not c["key_configured"]:
         return None
+    if c["provider"] in LOCAL:
+        return {"provider": c["provider"], "model": c["model"], "key": "", "base": "", "uid": uid, "local": True,
+                "billing": "platform", "config_version": str(c["version"]),
+                "label": f"Claude Code · {c['model']} (this computer)"}
     label, base, _ = PLATFORM[c["provider"]]
     return {"provider": c["provider"], "model": c["model"], "key": _key(c["provider"]), "base": base, "uid": uid,
             "local": False, "billing": "platform", "config_version": str(c["version"]),

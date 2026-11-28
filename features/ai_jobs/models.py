@@ -54,5 +54,16 @@ def _complete(cfg, system, human, as_json, max_tokens, temperature, web, timeout
         temperature=temperature, web=web, timeout=timeout, billing=cfg.get("billing") or (gateway.LOCAL if cfg.get("local") else gateway.BYOK)))
 
 
+def _claude_code(req):
+    """Claude Code on this computer as a gateway adapter (one JSON re-ask inside cli_llm.ask). No token counts."""
+    import json
+    from features.ai_jobs import cli_llm
+    out = cli_llm.ask(req.provider, req.system, req.human, req.as_json, req.web, req.timeout, req.model)
+    return gateway.Reply(json.dumps(out) if req.as_json else out)
+
+
+gateway.register_adapter("claude_cli", _claude_code)
+
+
 def check(r):
     gateway.check_response(r)

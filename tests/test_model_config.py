@@ -100,3 +100,40 @@ def test_per_user_default_budget_applies_to_each_user_separately(admin, monkeypa
         budgets.set_budget(admin["uid"], per_user=True, uid=a, limits={}, reason="both")
     r = admin["client"].post("/api/admin/budgets", json={"per_user": True, "limits": {"monthly_cost": 5}, "reason": "monthly cap"}, headers=H)
     assert r.status_code == 200 and r.get_json()["budget"]["scope"] == "user_default"
+
+
+def _fake_claude(tmp_path, monkeypatch, out='{"fit": 80}'):
+    """A stand-in `claude` command on PATH, so tests never use a real Claude plan."""
+    import os
+    path = tmp_path / "claude"
+    path.write_text(f"#!/bin/sh\necho '{out}'\n")
+    path.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}/usr/bin:/bin")
+    monkeypatch.delenv("APP_ENV", raising=False)
+
+
+def test_claude_code_on_this_computer_can_be_the_platform_model(admin, tmp_path, monkeypatch):
+    _fake_claude(tmp_path, monkeypatch)
+    st = admin["client"].get("/api/admin/model").get_json()
+    local = next(p for p in st["providers"] if p["id"] == "claude_cli")
+    assert local["key_configured"] and local["models"] == ["sonnet", "opus", "haiku"]
+    model_config.set_model(admin["uid"], "claude_cli", "sonnet", "use my own Claude plan")
+    uid, _ = make_user()
+    cfg = models.config(A.Workspace(uid))
+    assert cfg["provider"] == "claude_cli" and cfg["billing"] == "platform" and cfg["key"] == ""
+    with gateway.context(agent_id="job_analyst"):
+        assert models.chat(cfg, "s", "h", as_json=True) == {"fit": 80}
+    u = A.M.model_usage.find_one({"uid": uid})
+    assert u["provider"] == "claude_cli" and u["status"] == "ok" and u["agent_id"] == "job_analyst"
+
+
+def test_claude_code_is_never_offered_in_production_or_when_missing(admin, tmp_path, monkeypatch):
+    _fake_claude(tmp_path, monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    assert all(p["id"] != "claude_cli" for p in admin["client"].get("/api/admin/model").get_json()["providers"])
+    with pytest.raises(Exception, match="Claude Code isn't installed"):
+        model_config.set_model(admin["uid"], "claude_cli", "sonnet", "use my own Claude plan")
+    monkeypatch.delenv("APP_ENV")
+    model_config.set_model(admin["uid"], "claude_cli", "sonnet", "use my own Claude plan")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")                       # claude uninstalled later: no model, no crash
+    assert models.config(A.Workspace(admin["uid"])) is None
