@@ -106,6 +106,8 @@ def public_state(ws):
                   "can_hand_over": can_hand_over(), "handover": HANDOVER.get(ws.uid, ""),
                   "documents": [d["name"] for d in ws.documents() if COVER_DOC.search(d["name"])], "cover_letter": cover_file(ws)[0],
                   "evaluating": operations.batch_view(ws.uid, "ai_evaluate"), "statuses": {k: v[0] for k, v in STATES.items()},
+                  "researched": sorted({str(r.get("name", "")).lower() for r in (ws.load("company_research", {}) or {}).values()
+                                        if r.get("by_agent") and r.get("status") in ("found", "partial")}),
                   "followups_due": sum(1 for f in due_followups(ws) if f["kind"] != "cold"),}
 
 
@@ -144,7 +146,8 @@ def start(ws):
     # the run only searches, ranks and saves: nothing is applied to or sent from here.
     tid = runtime.start(ws.uid, "orchestrator", {"criteria": {**want, "count": MAX_RESULTS, "sources": sources, "match": True,
                                                               "review": bool(p.get("use_llm", True)), "prepare": False,
-                                                              "research": False, "apply": False}}, mode="on")
+                                                              "research": False, "research_after": True,
+                                                              "apply": False}}, mode="on")
     with ws.lock:
         ws.save("ai_match", {**(ws.load("ai_match", {}) or {}), "state": "running", "stage": "Reading your resume",
                              "want": want, "sources": sources, "started": time.time(), "task_id": tid, "skills": []})

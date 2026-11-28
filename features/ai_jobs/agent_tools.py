@@ -110,6 +110,30 @@ def research_company(ctx, name, website="", jobs=()):
     return {"status": research.status_of(result), "fields": result.get("fields") or {}}
 
 
+@tool("research.save", "1", "Save one company's research findings to the user's own research list (what the Research "
+      "button shows). Changes only the user's own data.",
+      {"type": "object", "additionalProperties": False, "required": ["name", "status"], "properties": {
+          "name": {"type": "string", "maxLength": 200}, "website": {"type": "string", "maxLength": 500},
+          "jobs": {"type": "array", "maxItems": 6, "items": OBJECT},
+          "status": {"type": "string", "enum": ["found", "partial", "not_found", "failed"]}, "fields": OBJECT,
+          "error": {"type": "string", "maxLength": 300}}},
+      {"type": "object", "required": ["saved"]}, tools_mod.WRITE_INTERNAL)
+def research_save(ctx, name, status, website="", jobs=(), fields=None, error=""):
+    import time
+    from features.research import company as research
+    ws, cid = ctx.workspace(), research.company_id(name)
+    with ws.lock:
+        rows = research.records(ws)
+        old = rows.get(cid) or {}
+        data = {**(old.get("data") or {}), "fields": fields or {}} if status != "failed" else old.get("data")
+        rows[cid] = {**old, "name": name, "website": website or old.get("website", ""), "jobs": list(jobs) or old.get("jobs", []),
+                     "status": status, "data": data, "error": error if status == "failed" else "", "updated": time.time(),
+                     "by_agent": "researcher"}
+        rows[cid].pop("task_id", None)
+        ws.save("company_research", rows)
+    return {"saved": True}
+
+
 @tool("writer.draft", "1", "Draft the application materials for one job without saving anything: a tailored resume "
       "(order only: tailor_rules rejects any change that adds, drops or alters a fact), a cover letter, and answers to "
       "the given form questions (approved answers from the user's bank as they are; new ones marked as drafts).",

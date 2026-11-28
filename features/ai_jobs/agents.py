@@ -260,6 +260,7 @@ def build_analyst():
 
 class ResearcherState(TypedDict, total=False):
     companies: list      # [{"name", "website", "jobs"}]
+    save: bool           # save each finding to the user's research list (needs mode On)
     findings: Annotated[list, operator.add]
     notes: Annotated[list, operator.add]
 
@@ -289,6 +290,10 @@ def researcher_run(state, config):
         except tools.ToolError as e:
             out = {"status": "failed", "fields": {}, "error": str(e)[:300]}
         found.append({"name": co["name"], **out})
+        if state.get("save") and c.mode == "on":
+            tools.call(c, "research.save", {"name": co["name"], "website": co.get("website", ""), "jobs": co.get("jobs", []),
+                                            "status": out["status"], "fields": out.get("fields") or {},
+                                            **({"error": out["error"]} if out.get("error") else {})})
     return {"findings": found}
 
 
@@ -434,7 +439,7 @@ def orch_plan(state, config):
         years, count = 0.0, 10
     criteria = {"role": role, "years": years, "location": str(c.get("location") or "")[:120], "count": count,
                 "research": bool(c.get("research")), "prepare": c.get("prepare") is not False,
-                "apply": bool(c.get("apply")), "match": bool(c.get("match")),
+                "apply": bool(c.get("apply")), "match": bool(c.get("match")), "research_after": bool(c.get("research_after")),
                 "company": str(c.get("company") or "")[:120], "resume": str(c.get("resume") or "")[:200],
                 "sources": [x for x in (c.get("sources") or []) if x in SEARCHABLE], "review": c.get("review") is not False}
     return {"criteria": criteria, "notes": [f"Looking for {count} × {role}" + (f" in {criteria['location']}" if criteria["location"] else "")]}
@@ -504,7 +509,8 @@ def orch_research(state, config):
     for p in picks:
         companies.setdefault(p["company"], {"name": p["company"], "website": "", "jobs": []})["jobs"].append(
             {"title": p["title"], "url": p.get("url") or ""})
-    child = runtime.delegate(config, "researcher", {"companies": list(companies.values())}, "research")
+    child = runtime.delegate(config, "researcher", {"companies": list(companies.values()),
+                                                   "save": bool(state["criteria"].get("match"))}, "research")
     return {"research": {"status": child["status"], "result": child.get("result") or {}, "error": child.get("error"),
                          "task_id": child["id"]}}
 
@@ -559,6 +565,19 @@ def orch_after_report(state):
     return "save" if state["criteria"].get("match") else END
 
 
+def orch_after_save(state):
+    """Match runs: once the matches are on the page, Kabir researches the top companies (saved to the research list)."""
+    picks = [s for s in ((state.get("analysis") or {}).get("result") or {}).get("shortlist", []) if s.get("recommend")]
+    return "late_research" if state["criteria"].get("research_after") and picks and not state.get("research") else END
+
+
+def orch_late_research(state, config):
+    out = orch_research(state, config)
+    r = out["research"]
+    return {**out, "notes": [f"Researched {len(r['result'].get('findings') or [])} companies" if r["status"] == "done"
+                             else f"Company research {r['status']}"]}
+
+
 def build_orchestrator():
     g = StateGraph(OrchestratorState)
     g.add_node("plan", orch_plan)
@@ -578,7 +597,9 @@ def build_orchestrator():
     g.add_edge("apply", "report")
     g.add_node("save", orch_save)
     g.add_conditional_edges("report", orch_after_report, {"save": "save", END: END})
-    g.add_edge("save", END)
+    g.add_node("late_research", orch_late_research)
+    g.add_conditional_edges("save", orch_after_save, {"late_research": "late_research", END: END})
+    g.add_edge("late_research", END)
     return g
 
 
@@ -595,9 +616,9 @@ def register():
         description="Ranks jobs against the resume and gives a reasoned shortlist.",
         instructions="rank with the engine; model second opinion on the top few"))
     runtime.register_agent(runtime.Agent(
-        "researcher", "1", "researcher-1", frozenset({"company.research"}), build_researcher, max_steps=6,
+        "researcher", "2", "researcher-2", frozenset({"company.research", "research.save"}), build_researcher, max_steps=6,
         description="Finds validated public facts about the employers of the shortlisted jobs.",
-        instructions="at most 3 companies; every fact checked against its page; read-only"))
+        instructions="at most 3 companies; every fact checked against its page; saves findings only to the user's own research list"))
     runtime.register_agent(runtime.Agent(
         "writer", "1", "writer-1", frozenset({"writer.draft"}), build_writer, max_steps=4,
         description="Drafts a tailored resume (order only), a cover letter and form answers for the top picks.",
@@ -607,7 +628,7 @@ def register():
         max_steps=4, description="Checks which picks can be applied to and submits each one only after you approve it.",
         instructions="at most 5 jobs; one approval per application, asked together; never in shadow mode"))
     runtime.register_agent(runtime.Agent(
-        "orchestrator", "5", "orchestrator-5", frozenset({"matches.save"}), build_orchestrator, max_steps=10,
+        "orchestrator", "6", "orchestrator-6", frozenset({"matches.save"}), build_orchestrator, max_steps=10,
         description="Turns a job-search goal into a plan, delegates to the Scout and the Analyst, and reports.",
         instructions="goal to criteria; scout, analyst, researcher when asked, writer, applicant when asked; report"))
 

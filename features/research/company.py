@@ -243,7 +243,14 @@ def public(rows):
 def list_companies(ws):
     rows = records(ws)
     running = set(operations.running_keys(ws.uid, "research"))
+    from infra import tasks
     for cid, row in rows.items():
+        t = tasks.get(ws.uid, row["task_id"]) if row.get("status") == "researching" and row.get("task_id") else None
+        if t and t["status"] not in tasks.FINAL:  # Kabir (the researcher agent) is on it
+            continue
+        if t and t["status"] != "done":
+            row["status"], row["error"] = "failed", str(t.get("error") or "The research agent stopped before it finished.")[:300]
+            continue
         if cid in running:
             row["status"] = "researching"
         elif row.get("status") == "researching":  # its run ended without saving (stopped or the server restarted)
@@ -279,6 +286,21 @@ def start(ws):
         rows[cid] = {**old, "name": name, "website": website or old.get("website", ""), "jobs": jobs or old.get("jobs", []),
                      "status": "researching", "attempts": old.get("attempts", 0) + 1, "updated": time.time()}
         ws.save("company_research", rows)
+    rec = {"name": name, "website": website or old.get("website", ""), "jobs": jobs or old.get("jobs", [])}
+    tid = None
+    try:  # accounts whose agents are On: Kabir, the researcher agent, does it (the plain job runs otherwise)
+        from infra import runtime
+        if runtime.user_mode(ws.uid) == "on" and "researcher" in runtime.AGENTS:
+            tid = runtime.start(ws.uid, "researcher", {"companies": [rec], "save": True}, mode="on",
+                                idempotency_key=f"research:{cid}:{old.get('attempts', 0) + 1}", max_attempts=2)
+    except Exception as e:
+        print(f"[Inkwell] researcher hand-off failed, running the plain job: {getattr(e, 'message', e)}", flush=True)
+    if tid:
+        with ws.lock:
+            rows = records(ws)
+            rows[cid] = {**rows.get(cid, {}), "task_id": tid}
+            ws.save("company_research", rows)
+        return jsonify(id=cid, status="researching", agent="researcher")
     try:
         op = operations.start(ws.uid, "research", cid, busy="This company is already being researched.")
     except locks.LockTimeout:

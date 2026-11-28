@@ -114,7 +114,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
     def answer(system, human):
         if "search criteria" in system:
             return {"role": "Backend Developer", "years": 4, "location": "", "count": 3, "research": False, "prepare": True, "apply": False,
-                             "match": False, "company": "", "resume": "", "sources": [], "review": True}
+                             "match": False, "research_after": False, "company": "", "resume": "", "sources": [], "review": True}
         if "plan a job search" in system:
             return {"searches": [{"source": "career_sites", "role": "Backend Engineer"}], "why": "ATS boards first"}
         return {"fit": 20 if "Initech" in human else 85, "verdict": "Strong match on Django APIs", "red_flags": []}
@@ -123,7 +123,7 @@ def test_the_model_reads_the_goal_plans_the_search_and_reviews_the_shortlist(wor
     run_all()
     r = report(uid, tid)
     assert r["criteria"] == {"role": "Backend Developer", "years": 4.0, "location": "", "count": 3, "research": False, "prepare": True, "apply": False,
-                             "match": False, "company": "", "resume": "", "sources": [], "review": True}
+                             "match": False, "research_after": False, "company": "", "resume": "", "sources": [], "review": True}
     assert world["searches"][0] == ("career_sites", "Backend Engineer")       # the model's plan was followed
     assert len(world["searches"]) == len(set(world["searches"]))              # no search is ever repeated
     assert r["scout_notes"][0] == "Round 1: ATS boards first"
@@ -366,3 +366,46 @@ def test_huge_board_results_keep_the_agent_state_small(world):
     import bson
     biggest = max(len(bson.encode(d)) for d in A.M.checkpoints.find({"uid": uid}))
     assert biggest < 4_000_000
+
+
+def _fake_research(monkeypatch, seen):
+    from features.research import company as research
+
+    def fake_text(ws, rec):
+        seen.append(rec["name"])
+        return {}
+    monkeypatch.setattr(research, "research_text", fake_text)
+    monkeypatch.setattr(research, "validate", lambda raw, rec, fetch=None: {"fields": {"website": [
+        {"value": f"https://{rec['name'].lower()}.example", "source": "x", "excerpt": "e"}]}})
+
+
+def test_a_match_run_saves_matches_first_then_kabir_researches_the_top_companies(world, monkeypatch):
+    seen = []
+    _fake_research(monkeypatch, seen)
+    uid = world["uid"]
+    A.Workspace(uid).save_doc("resume.pdf", b"%PDF-1.4 x")
+    tid = runtime.start(uid, "orchestrator", {"criteria": {"role": "Backend Developer", "years": 4, "match": True,
+                                                           "research_after": True, "prepare": False, "count": 3}}, mode="on")
+    run_all()
+    assert tasks.get(uid, tid)["status"] == "done"
+    assert [k["agent_id"] for k in tasks.children(uid, tid)] == ["job_scout", "job_analyst", "researcher"]
+    assert A.Workspace(uid).load("ai_match", {})["state"] == "done"            # matches saved before research
+    saved = A.Workspace(uid).load("company_research", {})
+    assert seen and {r["name"] for r in saved.values()} == set(seen)
+    assert all(r["by_agent"] == "researcher" and r["status"] == "partial" for r in saved.values())
+
+
+def test_the_research_button_hands_off_to_kabir_when_agents_are_on(world, monkeypatch):
+    from conftest import H, client_for
+    seen = []
+    _fake_research(monkeypatch, seen)
+    uid = world["uid"]
+    c = client_for(uid)
+    assert c.put("/api/agents/mode", json={"mode": "on"}, headers=H).status_code == 200
+    r = c.post("/api/research/companies", json={"name": "Acme", "website": "https://acme.example"}, headers=H).get_json()
+    assert r["agent"] == "researcher"
+    row = c.get("/api/research/companies", headers=H).get_json()["companies"][0]
+    assert row["status"] == "researching"
+    run_all()
+    row = c.get("/api/research/companies", headers=H).get_json()["companies"][0]
+    assert seen == ["Acme"] and row["status"] == "partial" and row["data"]["fields"]["website"]
